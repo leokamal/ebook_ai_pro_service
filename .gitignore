@@ -5,3 +5,9 @@ chroma_db_local/*
 .env.*
 .venv/
 .chroma_new_*/
+chroma_data/
+!.env.example
+
+**/__pycache__/
+*.pyc
+.pytest_cache/

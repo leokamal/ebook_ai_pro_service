@@ -1,0 +1,43 @@
+# Render blueprint for E-Book AI Pro (see docs/DEPLOYMENT.md).
+# A persistent disk requires a paid instance. Size the instance for torch + the embedding model (>= 2 GB RAM).
+services:
+  - type: web
+    name: ebook-ai-service
+    runtime: docker
+    plan: standard            # check current plan sizes; 2 GB RAM is the practical minimum
+    healthCheckPath: /health
+    disk:
+      name: ebook-ai-data
+      mountPath: /data         # holds the Chroma index and the Hugging Face model cache
+      sizeGB: 5
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: ADMIN_TOKEN
+        sync: false
+      - key: HF_TOKEN
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.5-flash
+      - key: EMBEDDING_MODEL
+        value: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+      - key: EMBEDDING_DIMENSION
+        value: "384"
+      - key: SUPABASE_STORAGE_BUCKET
+        value: user-documents
+      - key: CHROMA_PERSIST_DIRECTORY
+        value: /data/chroma_pro
+      - key: HF_HOME
+        value: /data/hf
+      - key: WORKER_ENABLED
+        value: "true"

@@ -1,50 +1,65 @@
-# Ebook AI API (for the Flutter client)
+# E-Book AI Pro API (for the Flutter client)
 
-Base URL: `https://ebook-ai-service.onrender.com`
+Interactive reference: `/docs` (Swagger UI) and `/openapi.json`. Base URL: your deployment, e.g. `https://<service>.onrender.com`.
+Liveness probe (no auth, no details): `GET /health` -> `{"status": "ok"}`. Everything else is under `/api/v1`.
+The previous single-library endpoints (`/query`, `/query-database/`, `/upload`, `/generate-database/`, `/load-database/`) no longer exist.
 
-## GET /health
-```json
-{"status": "ready", "index_version": "20261124T031500Z", "chunks": 812}
+## Overview (`/api/v1`)
+Auth: `Authorization: Bearer <Supabase access token>` (verified server-side; `user_id` is never accepted from the client).
+Errors on `/api/v1` only: `{"error": {"code": "unauthorized", "message": "...", "request_id": "..."}}`.
+Pagination: `?limit=1..100&cursor=<opaque>` -> `{"items": [...], "next_cursor": "..."|null}`.
+- `GET /api/v1/health` (no auth): `{"status": "ok"|"unconfigured", "environment": "..."}`, 503 when unconfigured.
+
+### Documents (Phase 4)
+Flutter flow: upload the PDF to Supabase Storage at `user-documents/{user_id}/{document_id}/{file_name}` (generate `document_id` as a UUID, **upload with `upsert: false`**), then register it.
+- `POST /api/v1/documents` `{"document_id": "<uuid>", "title": "...", "file_name": "book.pdf", "language": "fr"?, "auto_process": true}` -> `201` document (`200` if already registered by you; `409` if the id belongs to someone else; `422 file_not_found|invalid_file`; `413` too large). Unknown fields (`user_id`, `file_path`) are rejected (422).
+- `GET /api/v1/documents?limit=&cursor=&status=` -> `{"items": [...], "next_cursor": ...}`
+- `GET /api/v1/documents/{id}` -> document. Other users' documents return `404`.
+- `GET /api/v1/documents/{id}/status` -> `{"status","index_state","progress","attempts","error_message","page_count","chunk_count"}`. `status`: `uploaded|queued|processing|completed|failed|deleting`. Poll it.
+- `POST /api/v1/documents/{id}/process` (only from `uploaded`) and `/retry` (only from `failed`) -> `202 {"document_id","status":"queued","job_id"}`; wrong state -> `409`.
+- `DELETE /api/v1/documents/{id}` -> `202` (asynchronous: vectors, file and row are removed).
+Failures set `status=failed` with a user-safe `error_message` (e.g. scanned PDF without text, corrupt or password-protected PDF, too many pages).
+Admin (`X-Admin-Token`): `POST /api/v1/admin/reindex` (after changing `EMBEDDING_MODEL`), `POST /api/v1/admin/reconcile` (rebuild documents whose vectors were lost).
+
+### Conversations and chat (Phase 5)
+Auth required on all routes. Resources of other users return `404`.
+- `POST /api/v1/conversations` `{"mode": "single_document"|"all_documents", "document_id": "<uuid>"?, "title"?}` -> `201`. `single_document` requires `document_id` (yours); `all_documents` forbids it. The mode and document are fixed for the life of the conversation.
+- `GET /api/v1/conversations?limit=&cursor=` (most recently updated first), `GET|PATCH|DELETE /api/v1/conversations/{id}` (`PATCH` accepts only `title`; `DELETE` -> `204`).
+- `GET /api/v1/conversations/{id}/messages?limit=&cursor=` -> newest first; assistant messages carry `sources`.
+- `POST /api/v1/chat` `{"conversation_id": "<uuid>", "message": "1-4000 chars", "summarize": false}` ->
+  `{"message_id", "answer", "sources": [{"document_id","document_title","page_number","chunk_id","relevance_score","snippet"}], "usage": {"input_tokens","output_tokens"}}`.
+  The answer text contains `[S1]`-style markers that match entries in `sources` (only sources that really support the answer are returned; an answer without markers has `sources: []`). When the documents do not contain the answer, `answer` says so in the user's language and `sources` is `[]`.
+  Errors: `404` conversation/document not found, `409 document_not_indexed` (single-document chat before processing finished), `429 llm_quota_exceeded` (with `Retry-After`), `503 llm_unavailable|index_unavailable`. A turn (your message + the answer) is stored only after a successful answer; on any error nothing is stored, so retrying is safe. `429 rate_limited` (with `Retry-After`) if one user sends more than `CHAT_RATE_PER_MINUTE` (default 20) requests per minute. An answer that cannot be grounded in a cited source is returned as the not-found reply with `sources: []`.
+  The request cannot carry `user_id` or `document_id`; scope comes from the conversation. Streaming variant: `POST /api/v1/chat/stream` (below).
+
+### Search (Phase 6)
+- `POST /api/v1/search` `{"query": "1-1000 chars", "mode": "single_document"|"all_documents", "document_id": "<uuid>"?, "top_k": 1-20 (default 6)}` ->
+  `{"results": [{"chunk_id","document_id","document_title","page_number","score","text"}], "searched_documents": N}` sorted by score (best first). No LLM call.
+  `single_document` requires `document_id` and `all_documents` forbids it (422 otherwise, as for unknown fields such as `user_id`). Same scope rules as chat: another user's document -> `404`; a document that is not indexed yet -> `409 document_not_indexed`; with `all_documents` only your completed, indexed documents are searched (`searched_documents` tells you how many; an empty library returns `results: []`). In `all_documents` mode results are diverse: at most a few chunks per document. Rate limit: `SEARCH_RATE_PER_MINUTE` (default 60) -> `429 rate_limited`.
+- Multi-document chat (`mode: all_documents`) cites the document and page of every source; the prompt context is grouped by document so answers can compare books.
+
+### Streaming chat (Phase 7)
+`POST /api/v1/chat/stream` takes the same body as `/chat` and the same rules, and responds with `text/event-stream`
+(headers `Cache-Control: no-cache`, `X-Accel-Buffering: no`).
+Validation, ownership, readiness and retrieval happen **before** the stream starts, so `401/404/409/422/429/503` are ordinary
+JSON errors (error envelope below). Events, in order:
 ```
-`status` is `starting` | `ready` | `error` (an `error` field is added on failure). Use it as the Render health check and for keep-alive pings.
-
-## POST /query  (Server-Sent Events)
-Request (`Content-Type: application/json`):
-```json
-{"query": "What is a StatefulWidget?", "file_name": "books/flutter-succinctly.pdf"}
+event: meta     data: {"conversation_id": "..."}
+event: token    data: {"text": "Cats sleep "}            (0..n, raw model text incl. [S1] markers)
+event: sources  data: {"sources": [{"document_id","document_title","page_number","chunk_id","relevance_score","snippet"}]}
+event: done     data: {"message_id": "...", "answer": "Cats sleep a lot [S1].", "refused": false, "usage": {"output_tokens": 7}}
 ```
-- `query`: 1-1000 characters, required.
-- `file_name`: optional; restricts the search to one book (the storage path, as listed in `sources`).
+or, if generation fails after the stream started: `event: error data: {"code": "llm_quota_exceeded", "message": "..."}` as the last event (nothing is stored).
+- **`done.answer` is authoritative.** It equals the concatenated tokens for a normal cited answer. It differs when the answer was turned into a refusal (the documents do not contain it, or the answer had no valid citation) or when unknown citation markers were stripped: replace the streamed text with `done.answer`. For a "not found" refusal the only token is the refusal sentence itself (the internal marker is never streamed).
+- `sources` is sent after generation (citations need the full text) and `refused: true` implies `sources: []`.
+- The turn (your message + the answer) is stored only when `done` is sent. If the client disconnects, nothing is stored.
+- At most `CHAT_MAX_CONCURRENT_STREAMS` (default 2) streams per user may be in flight; another one gets `429 rate_limited` (`Retry-After: 5`). A generation that runs longer than `LLM_STREAM_DEADLINE_SECONDS` (120) ends with an `error` event (`llm_unavailable`) and stores nothing.
+- `usage.output_tokens` is Gemini's count when available, otherwise an estimate.
+- Dart sketch: `http.Client().send(request)`, then split `response.stream.transform(utf8.decoder)` on `
 
-Response: `text/event-stream`. Events, in order:
-```
-event: sources
-data: {"sources": ["books/flutter-succinctly.pdf"]}
+`; each block has an `event:` and a `data:` line.
 
-event: token
-data: {"text": "A StatefulWidget is "}
-
-event: token
-data: {"text": "a widget that ..."}
-
-event: done
-data: {}
-```
-- `sources` is sent right after retrieval, before any token.
-- If no passage matches, one `token` with "I couldn't find this information in the books." is sent (no LLM call), then `done`.
-- On failure: `event: error` with `data: {"detail": "..."}`, and the stream ends.
-
-Dart sketch: send the POST with `http.Client().send(...)`, then split `response.stream.transform(utf8.decoder)` on blank lines (`\n\n`); each block has an `event:` and a `data:` line.
-
-## 503 while warming up
-If the index is not loaded yet, `/query` and `/query-database/` wait up to 30 s, then return:
-```json
-{"detail": "Service warming up, retry shortly"}
-```
-Retry after 2-5 s. If loading failed: `{"detail": "Index unavailable: ..."}`.
-
-## GET /query-database/?query=...
-Non-streaming: `{"answer": "...", "context": [{"page_content": "retrieved chunk", "metadata": {"file_name": "books/x.pdf"}}, ...]}`. The streaming `sources` event also carries `context` in the same shape.
-
-## Admin (not for the app)
-`POST /generate-database/` and `POST /load-database/` need header `X-Admin-Token: <ADMIN_TOKEN>`; without it: 403 (503 if `ADMIN_TOKEN` is not configured on the server).
+### Error envelope, request ids, OpenAPI
+- Every `/api/v1` error: `{"error": {"code": "...", "message": "...", "request_id": "..."}}`. `request_id` equals the `X-Request-ID` response header (a client-supplied `X-Request-ID` of 8-64 chars `[A-Za-z0-9._-]` is reused, otherwise one is generated). Quote it when reporting a problem.
+- Codes: `unauthorized`(401, `WWW-Authenticate: Bearer`), `forbidden`(403, admin only), `not_found`(404, also for other users' resources), `conflict`(409), `document_not_indexed`(409), `validation_error`(400/422), `payload_too_large`(413), `file_not_found`/`invalid_file`(422), `quota_exceeded`(429, per-user limits), `rate_limited`(429, `Retry-After`), `llm_quota_exceeded`(429, `Retry-After`), `llm_unavailable`(503), `index_unavailable`(503), `storage_unavailable`(503), `internal_error`(500, details only in server logs).
+- Interactive docs: `/docs` (Swagger UI, "Authorize" accepts the Supabase access token) and `/openapi.json`. `tests/pro/test_streaming_and_openapi.py` fails if a required endpoint, the bearer scheme, the error schema or the SSE description disappears.

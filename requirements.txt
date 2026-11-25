@@ -2,16 +2,14 @@
 fastapi
 uvicorn
 pysqlite3-binary; sys_platform == "linux"
+chromadb
+sentence_transformers
+torch
+PyMuPDF
+PyJWT[crypto]
+httpx
+postgrest
 langchain-core
 langchain_google_genai
-PyPDF2
 langchain_text_splitters
-langchain_chroma
-supabase
-langchain-huggingface
-sentence_transformers
-easyocr
-python-multipart
-torch
-pillow
 python-dotenv

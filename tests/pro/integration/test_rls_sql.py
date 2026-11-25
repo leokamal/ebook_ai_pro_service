@@ -1,0 +1,213 @@
+"""SQL-level security tests: RLS, column grants, constraints, storage policies, job RPC privileges.
+
+NOT run in the normal suite: they need a real Postgres with the Supabase schema (auth, storage) and the
+migration applied. Run against a LOCAL Supabase (`supabase start && supabase db reset`) or a throwaway project:
+
+    pip install "psycopg[binary]"
+    SUPABASE_TEST_DB_URL=postgresql://postgres:postgres@127.0.0.1:54322/postgres pytest tests/pro/integration -m integration
+
+Every test runs inside a transaction that is rolled back, so the database is left untouched.
+"""
+import json
+import os
+import uuid
+
+import pytest
+
+pytestmark = pytest.mark.integration
+psycopg = pytest.importorskip("psycopg")
+URL = os.environ.get("SUPABASE_TEST_DB_URL")
+if not URL:
+    pytest.skip("SUPABASE_TEST_DB_URL not set", allow_module_level=True)
+
+
+@pytest.fixture
+def db():
+    conn = psycopg.connect(URL, autocommit=False)
+    try:
+        yield conn
+    finally:
+        conn.rollback()
+        conn.close()
+
+
+def as_role(conn, role, uid=None):
+    conn.execute("reset role")
+    if role != "postgres":
+        conn.execute(f"set local role {role}")
+    claims = {"sub": uid, "role": role} if uid else {}
+    conn.execute("select set_config('request.jwt.claims', %s, true)", (json.dumps(claims),))
+
+
+def make_user(conn):
+    uid = str(uuid.uuid4())
+    as_role(conn, "postgres")
+    conn.execute("insert into auth.users (id, email) values (%s, %s)", (uid, f"{uid}@test.local"))
+    return uid
+
+
+def add_doc(conn, uid, doc=None, name="b.pdf", **extra):
+    doc = doc or str(uuid.uuid4())
+    as_role(conn, "authenticated", uid)
+    conn.execute("insert into public.documents (id, user_id, title, file_name, file_path, file_size) "
+                 "values (%s,%s,'T',%s,%s,100)", (doc, uid, name, f"{uid}/{doc}/{name}"))
+    return doc
+
+
+def denied(conn, sql, params=()):
+    """True if the statement is rejected (RLS, privilege or constraint); the failed statement is rolled back."""
+    conn.execute("savepoint s")
+    try:
+        cur = conn.execute(sql, params)
+        rows = cur.rowcount
+        conn.execute("rollback to savepoint s")
+        return rows == 0 if sql.lstrip().lower().startswith(("update", "delete")) else False
+    except (psycopg.errors.InsufficientPrivilege, psycopg.errors.CheckViolation, psycopg.errors.ForeignKeyViolation,
+            psycopg.errors.UniqueViolation) as e:
+        conn.execute("rollback to savepoint s")
+        return True
+
+
+# ------------------------------------------------------------------ documents
+def test_users_only_see_and_touch_their_own_documents(db):
+    a, b = make_user(db), make_user(db)
+    doc = add_doc(db, a)
+    as_role(db, "authenticated", b)
+    assert db.execute("select count(*) from public.documents").fetchone()[0] == 0
+    assert denied(db, "update public.documents set title='x' where id=%s", (doc,))           # 0 rows
+    assert denied(db, "delete from public.documents where id=%s", (doc,))
+    as_role(db, "authenticated", a)
+    assert db.execute("select count(*) from public.documents").fetchone()[0] == 1
+
+
+def test_users_cannot_write_server_owned_columns_or_impersonate(db):
+    a, b = make_user(db), make_user(db)
+    doc = add_doc(db, a)
+    as_role(db, "authenticated", a)
+    for col, val in (("status", "completed"), ("index_state", "indexed"), ("chunk_count", 99),
+                     ("error_message", "x"), ("page_count", 3), ("user_id", b)):
+        assert denied(db, f"update public.documents set {col}=%s where id=%s", (val, doc)), col
+    d2 = str(uuid.uuid4())
+    assert denied(db, "insert into public.documents (id,user_id,title,file_name,file_path,file_size) "
+                      "values (%s,%s,'T','b.pdf',%s,10)", (d2, b, f"{b}/{d2}/b.pdf"))           # user_id != auth.uid()
+    assert denied(db, "insert into public.documents (id,user_id,title,file_name,file_path,file_size,status) "
+                      "values (%s,%s,'T','b.pdf',%s,10,'completed')", (d2, a, f"{a}/{d2}/b.pdf"))  # forged status
+
+
+def test_document_constraints(db):
+    a = make_user(db)
+    as_role(db, "authenticated", a)
+    d = str(uuid.uuid4())
+    base = "insert into public.documents (id,user_id,title,file_name,file_path,file_size) values (%s,%s,'T',%s,%s,%s)"
+    assert denied(db, base, (d, a, "b.pdf", f"{a}/{d}/other.pdf", 10))              # path != user/doc/file_name
+    assert denied(db, base, (d, a, "b.pdf", f"{uuid.uuid4()}/{d}/b.pdf", 10))       # wrong folder
+    assert denied(db, base, (d, a, "../b.pdf", f"{a}/{d}/../b.pdf", 10))            # traversal in name
+    assert denied(db, base, (d, a, "b.pdf", f"{a}/{d}/b.pdf", 0))                   # empty file
+    assert denied(db, base, (d, a, "b.pdf", f"{a}/{d}/b.pdf", 52428801))            # > 50 MB
+
+
+# ------------------------------------------------------------------ conversations / messages / sources
+def test_conversation_rules_and_message_isolation(db):
+    a, b = make_user(db), make_user(db)
+    doc = add_doc(db, a)
+    ins = "insert into public.conversations (user_id, mode, document_id) values (%s,%s,%s)"
+    as_role(db, "authenticated", a)
+    assert denied(db, ins, (a, "single_document", None))                            # mode/doc pairing
+    assert denied(db, ins, (a, "all_documents", doc))
+    as_role(db, "authenticated", b)
+    assert denied(db, ins, (b, "single_document", doc))                             # B cannot attach A's document
+    as_role(db, "authenticated", a)
+    conv = db.execute(ins + " returning id", (a, "single_document", doc)).fetchone()[0]
+    assert denied(db, "insert into public.messages (conversation_id, role, content) values (%s,'user','hi')", (conv,))
+    as_role(db, "postgres")
+    msg = db.execute("insert into public.messages (conversation_id, role, content) values (%s,'assistant','x') "
+                     "returning id", (conv,)).fetchone()[0]
+    as_role(db, "authenticated", b)
+    assert db.execute("select count(*) from public.messages").fetchone()[0] == 0
+    assert db.execute("select count(*) from public.message_sources").fetchone()[0] == 0
+    assert denied(db, "delete from public.messages where id=%s", (msg,))
+    as_role(db, "authenticated", a)
+    assert db.execute("select count(*) from public.messages").fetchone()[0] == 1
+
+
+def test_message_source_must_match_chunk_and_document(db):
+    a = make_user(db)
+    d1, d2 = add_doc(db, a), add_doc(db, a)
+    as_role(db, "postgres")
+    chunk = str(uuid.uuid4())
+    db.execute("insert into public.document_chunks (id, document_id, user_id, chunk_index, page_number) "
+               "values (%s,%s,%s,0,1)", (chunk, d1, a))
+    conv = db.execute("insert into public.conversations (user_id, mode) values (%s,'all_documents') returning id",
+                      (a,)).fetchone()[0]
+    msg = db.execute("insert into public.messages (conversation_id, role, content) values (%s,'assistant','x') "
+                     "returning id", (conv,)).fetchone()[0]
+    ins = "insert into public.message_sources (message_id, document_id, chunk_id, page_number) values (%s,%s,%s,1)"
+    assert denied(db, ins, (msg, d2, chunk))                                         # chunk belongs to d1, not d2
+    db.execute(ins, (msg, d1, chunk))
+    db.execute("delete from public.document_chunks where id=%s", (chunk,))           # reindex: history survives
+    row = db.execute("select chunk_id, page_number, document_id from public.message_sources").fetchone()
+    assert row[0] is None and row[1] == 1 and str(row[2]) == d1
+
+
+def test_cascade_deletes(db):
+    a = make_user(db)
+    doc = add_doc(db, a)
+    as_role(db, "postgres")
+    conv = db.execute("insert into public.conversations (user_id, mode, document_id) values (%s,'single_document',%s) "
+                      "returning id", (a, doc)).fetchone()[0]
+    db.execute("insert into public.messages (conversation_id, role, content) values (%s,'user','x')", (conv,))
+    db.execute("delete from public.documents where id=%s", (doc,))
+    assert db.execute("select count(*) from public.conversations where id=%s", (conv,)).fetchone()[0] == 0
+    assert db.execute("select count(*) from public.messages where conversation_id=%s", (conv,)).fetchone()[0] == 0
+
+
+# ------------------------------------------------------------------ jobs
+def test_jobs_are_read_only_for_users_and_rpcs_are_service_role_only(db):
+    a, b = make_user(db), make_user(db)
+    doc = add_doc(db, a)
+    as_role(db, "service_role")
+    job = db.execute("select public.enqueue_processing_job(%s,%s,'ingest')", (doc, a)).fetchone()[0]
+    assert denied(db, "select public.enqueue_processing_job(%s,%s,'ingest')", (doc, a))      # one active job only
+    assert db.execute("select status from public.documents where id=%s", (doc,)).fetchone()[0] == "queued"
+    claimed = db.execute("select id, attempts from public.claim_processing_job('w1', 300)").fetchone()
+    assert str(claimed[0]) == job and claimed[1] == 1
+    assert db.execute("select count(*) from public.claim_processing_job('w2', 300)").fetchone()[0] == 0  # leased
+    as_role(db, "authenticated", a)
+    assert db.execute("select count(*) from public.processing_jobs").fetchone()[0] == 1
+    assert denied(db, "update public.processing_jobs set status='completed' where id=%s", (job,))
+    assert denied(db, "insert into public.processing_jobs (user_id, document_id) values (%s,%s)", (a, doc))
+    for fn in ("enqueue_processing_job(%s,%s,'ingest')", "claim_processing_job('w',300)",
+               "finish_job(%s,true,null,null)"):
+        params = (doc, a) if fn.startswith("enqueue") else ((job,) if fn.startswith("finish") else ())
+        assert denied(db, f"select public.{fn}", params), fn
+    as_role(db, "authenticated", b)
+    assert db.execute("select count(*) from public.processing_jobs").fetchone()[0] == 0
+    as_role(db, "anon")
+    assert denied(db, "select count(*) from public.documents")
+
+
+# ------------------------------------------------------------------ storage
+def test_storage_policies_confine_users_to_their_own_folder(db):
+    a, b = make_user(db), make_user(db)
+    as_role(db, "authenticated", a)
+    ins = "insert into storage.objects (bucket_id, name, owner) values ('user-documents', %s, %s)"
+    doc = str(uuid.uuid4())
+    db.execute(ins, (f"{a}/{doc}/b.pdf", a))                                         # own folder: allowed
+    assert denied(db, ins, (f"{b}/{doc}/b.pdf", a))                                   # someone else's folder
+    assert denied(db, "insert into storage.objects (bucket_id, name, owner) values ('other-bucket', %s, %s)",
+                  (f"{a}/x", a))
+    assert denied(db, "update storage.objects set name=%s where name=%s", (f"{a}/{doc}/c.pdf", f"{a}/{doc}/b.pdf"))
+    as_role(db, "authenticated", b)
+    assert db.execute("select count(*) from storage.objects where bucket_id='user-documents'").fetchone()[0] == 0
+    # storage.protect_delete rejects direct deletes with 42501 unless this flag is set; set it so that the
+    # assertion below really exercises the RLS policy (0 rows visible/deleted) and not the trigger
+    db.execute("select set_config('storage.allow_delete_query', 'true', true)")
+    assert denied(db, "delete from storage.objects where name=%s", (f"{a}/{doc}/b.pdf",))
+    as_role(db, "authenticated", a)
+    db.execute("select set_config('storage.allow_delete_query', 'true', true)")
+    assert db.execute("select count(*) from storage.objects where name=%s", (f"{a}/{doc}/b.pdf",)).fetchone()[0] == 1
+    as_role(db, "anon")
+    assert db.execute("select count(*) from storage.objects where bucket_id='user-documents'").fetchone()[0] == 0
+    row = db.execute("select public, file_size_limit, allowed_mime_types from storage.buckets "
+                     "where id='user-documents'").fetchone()
+    assert row[0] is False and row[1] == 52428800 and list(row[2]) == ["application/pdf"]

@@ -5,6 +5,8 @@ description: Implement a feature, fix, or optimization in the ebook_ai_service F
 
 # do-feature
 
+> **Note (E-Book AI Pro only):** the old library service (`rag_service.py`, `ocr_service.py`, `/query*`, `VERSION.json` publishing, `chroma_db_local/`) was removed. Ignore those invariants below; the current ones are in `CLAUDE.md` and apply to `app/`. Specs live in `docs/features/`; keep README/API/DEPLOYMENT/spec status in sync.
+
 Implement a spec end to end: code, tests, docs, review. The spec is the contract; this skill is how to honor it without breaking this service's invariants.
 
 ## Steps

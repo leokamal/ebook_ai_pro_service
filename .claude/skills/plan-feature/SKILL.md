@@ -5,6 +5,8 @@ description: Turn a feature idea, bug, or optimization for the ebook_ai_service 
 
 # plan-feature
 
+> **Note (E-Book AI Pro only):** the old library service (`rag_service.py`, `ocr_service.py`, `/query*`, `VERSION.json` publishing, `chroma_db_local/`) was removed. Ignore those invariants below; the current ones are in `CLAUDE.md` and apply to `app/`. Specs live in `docs/features/`; keep README/API/DEPLOYMENT/spec status in sync.
+
 Write a spec precise enough that someone (usually `/do-feature`) can implement it without re-deriving the design. Planning is read-only: do not edit source files, `CLAUDE.md`, or `docs/API.md` here. The only file you create is the spec.
 
 ## Why this shape

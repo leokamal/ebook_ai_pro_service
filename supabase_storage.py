@@ -1,67 +1,63 @@
-"""Thin wrapper around Supabase Storage (replaces the former Firebase Storage usage).
+"""Supabase Storage helpers for E-Book AI Pro (REST via httpx, streaming: PDFs never sit in RAM).
 
-Required environment variables:
-  SUPABASE_URL          e.g. https://<project-ref>.supabase.co
-  SUPABASE_SERVICE_KEY  service_role key (server-side only, never ship to clients)
-Optional:
-  SUPABASE_BUCKET       storage bucket name (default: "ebook-ai")
+They use the service-role key, which BYPASSES storage RLS: callers must have verified ownership of `path`
+(the ingestion service pins it to `{user_id}/{document_id}/{file_name}` first).
+
+Environment: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY.
 """
 import os
-from functools import lru_cache
-
-PAGE_SIZE = 100
 
 
-def bucket_name() -> str:
-    return os.environ.get("SUPABASE_BUCKET", "ebook-ai")
+def _service_key() -> str:
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    if not key or not os.environ.get("SUPABASE_URL"):
+        raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set")
+    return key
 
 
-@lru_cache(maxsize=1)
-def _client():
-    from supabase import create_client
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_SERVICE_KEY")
-    if not url or not key:
-        raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_KEY must be set")
-    return create_client(url, key)
+def _object_url(bucket: str, path: str, prefix: str = "object") -> str:
+    from urllib.parse import quote
+    return f"{os.environ['SUPABASE_URL'].rstrip('/')}/storage/v1/{prefix}/{bucket}/{quote(path, safe='/')}"
 
 
-def _bucket():
-    return _client().storage.from_(bucket_name())
+def _headers() -> dict:
+    key = _service_key()
+    return {"Authorization": f"Bearer {key}", "apikey": key}
 
 
-def list_files(prefix: str) -> list[str]:
-    """Recursively list file paths under `prefix` (Supabase list() is one level only)."""
-    prefix = prefix.strip("/")
-    results: list[str] = []
-    offset = 0
-    while True:
-        items = _bucket().list(prefix, {"limit": PAGE_SIZE, "offset": offset})
-        for item in items:
-            path = f"{prefix}/{item['name']}" if prefix else item["name"]
-            if item.get("id") is None:  # folder placeholder
-                results.extend(list_files(path))
-            else:
-                results.append(path)
-        if len(items) < PAGE_SIZE:
-            break
-        offset += PAGE_SIZE
-    return results
+def inspect_object(bucket: str, path: str):
+    """(size_in_bytes, first_bytes) of an object, or None if it does not exist. Reads ~8 bytes."""
+    import httpx
+    with httpx.stream("GET", _object_url(bucket, path), headers=_headers(), timeout=20) as r:
+        if r.status_code in (400, 404):
+            return None
+        r.raise_for_status()
+        size = int(r.headers.get("content-length", "-1"))
+        head = b""
+        for chunk in r.iter_bytes():
+            head += chunk
+            if len(head) >= 8:
+                break
+        return size, head[:8]
 
 
-def download_bytes(path: str) -> bytes:
-    return _bucket().download(path)
+def download_to_path(bucket: str, path: str, dest: str, max_bytes: int) -> int:
+    """Stream an object to `dest`; aborts if it exceeds max_bytes. Returns the byte count."""
+    import httpx
+    total = 0
+    with httpx.stream("GET", _object_url(bucket, path), headers=_headers(), timeout=60) as r:
+        r.raise_for_status()
+        with open(dest, "wb") as f:
+            for chunk in r.iter_bytes(1024 * 256):
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ValueError("object exceeds max size")
+                f.write(chunk)
+    return total
 
 
-def upload_file(path: str, local_path: str) -> None:
-    with open(local_path, "rb") as f:
-        _bucket().upload(
-            path,
-            f.read(),
-            {"content-type": "application/octet-stream", "upsert": "true"},
-        )
-
-
-def delete_files(paths: list[str]) -> None:
-    if paths:
-        _bucket().remove(paths)
+def remove_object(bucket: str, path: str) -> None:
+    import httpx
+    url = f"{os.environ['SUPABASE_URL'].rstrip('/')}/storage/v1/object/{bucket}"
+    r = httpx.request("DELETE", url, headers=_headers(), json={"prefixes": [path]}, timeout=20)
+    r.raise_for_status()

@@ -1,1 +1,4 @@
 pytest
+httpx
+cryptography
+# optional, for tests/pro/integration (SQL-level RLS tests): psycopg[binary]

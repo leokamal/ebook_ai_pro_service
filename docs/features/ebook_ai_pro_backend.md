@@ -2,7 +2,44 @@
 
 Extend the existing `ebook_ai_service` into the E-Book AI Pro backend. Each user has a private PDF library in Supabase Storage. Users chat with one PDF (Personal RAG) or with their whole library (Personal Multi-RAG). Conversations, messages and citations are persisted. Hard constraints: ChromaDB is the only vector store (no pgvector or vector columns); Gemini is the LLM; Supabase provides Auth, Postgres and Storage; FastAPI on Render; Flutter is the only client. All legacy endpoints (`/query`, `/query-database/`, `/upload`, `/health`, `/generate-database/`, `/load-database/`) keep working with unchanged response shapes.
 
-**This file is the Phase 1 deliverable** (analysis and migration plan). Implementation proceeds one phase at a time (see *Phases*). After each phase, `/do-feature` must stop, list created and modified files, run tests, list open issues and update docs before the next phase starts.
+**This file started as the Phase 1 deliverable** (analysis and migration plan); the status section below tracks what was built. Implementation proceeds one phase at a time (see *Phases*). After each phase, `/do-feature` must stop, list created and modified files, run tests, list open issues and update docs before the next phase starts.
+
+## Implementation status (updated after Phase 8 and the removal of the old version)
+
+**Decision (owner): the product is E-Book AI Pro only.** The old single-library service (global Chroma index, `/query`, `/query-database/`, `/upload` OCR, `/generate-database/`, `/load-database/`, `rag_service.py`, `ocr_service.py`, `build.sh`, its tests and notebook) was deleted; it is recoverable from git history (`first init`). Every passage below that says legacy endpoints must keep working is superseded by this decision. The `books` SQL migration is kept only for migration-history consistency.
+
+All eight phases are implemented. Operational documentation: [README](../../README.md), [DEPLOYMENT](../DEPLOYMENT.md), [API](../API.md). Offline tests: `pytest tests/pro` (no network, no model downloads); SQL-level tests: `tests/pro/integration` (need a real Postgres, **not yet run**).
+
+| Phase | Status | Where |
+|---|---|---|
+| 1 Analysis | done | this document |
+| 2 Supabase foundation | done | `supabase/migrations/20261125000000_pro_schema.sql`, `app/core/`, `app/repositories/` |
+| 3 Chroma + embeddings | done | `app/services/{vector_store,embedding,retrieval}.py` |
+| 4 Ingestion | done | `app/api/v1/documents.py`, `app/services/{pdf_extraction,ingestion,maintenance}.py`, `app/workers/` |
+| 5 Personal RAG | done | `app/services/{orchestrator,rag_parts,llm}.py`, `app/prompts/`, `app/api/v1/{conversations,chat}.py` |
+| 6 Multi-RAG | done | `app/api/v1/search.py`, `ContextBuilder(group=True)`, `RerankingService` |
+| 7 API integration | done | `/chat/stream` (SSE), request ids, error envelope, OpenAPI contract tests |
+| 8 Security + deployment | done (see gaps) | `tests/pro/test_isolation.py`, `tests/pro/integration/`, `Dockerfile`, `render.yaml`, README, DEPLOYMENT |
+
+### Deviations from this spec (and why)
+1. **Persistence order.** The user message is no longer stored before generation. A turn (user + assistant messages + sources) is stored only after a complete, grounded answer: a failed generation leaves nothing behind, retries cannot duplicate turns, history never has consecutive user turns. Consequently the SSE `meta` event carries only `conversation_id`; `done` carries `message_id`, `answer`, `refused`, `usage`.
+2. **`SUPABASE_ANON_KEY` is required** by the backend (it forwards the user's JWT to PostgREST), not reference-only.
+3. **Ungrounded answers become refusals.** An answer with no valid `[Sn]` citation is replaced by the "not found" reply (strict: tune after real-model testing).
+4. **`done.answer` is authoritative** in the stream (refusals and stripped markers can differ from the streamed tokens); the refusal sentinel is never streamed.
+5. **No UPDATE policy on `storage.objects`**: uploaded PDFs are immutable (clients upload with `upsert: false`).
+6. **Added**: table `document_chunks`; per-user quotas (`MAX_DOCS_PER_USER`, `MAX_ACTIVE_JOBS_PER_USER`); rate limits on chat/search; `/admin/reindex` and `/admin/reconcile` (they run inside the request for now); `X-Request-ID`.
+7. **Legacy removed** (owner decision, see above); config no longer reads `SUPABASE_SERVICE_KEY`/`GOOGLE_API_KEY`; CORS is env-driven (`CORS_ORIGINS`, credentials off); `/health` is a liveness probe.
+7b. **Layout**: no `app/main.py` (the root `main.py` stays the entrypoint) and migrations live in `supabase/migrations/`.
+8. Final review (Phase 7-8) hardening: per-user cap on concurrent streams + stream deadline, `LLM_MAX_OUTPUT_TOKENS`, auto-title through the service-role writer (the user-scoped client may be closed when a stream ends), container entrypoint that fixes volume ownership then drops to a non-root user, legacy modules also accept `SUPABASE_SERVICE_ROLE_KEY`/`GEMINI_API_KEY`, SQL storage test sets `storage.allow_delete_query` so the DELETE policy is really exercised.
+9. `reindex_all` flags documents stale **before** resetting the collection and refuses while jobs are running (found in review).
+
+### Known gaps / not verified (be honest before launch)
+- SQL integration tests (RLS, column grants, storage policies, RPC privileges) were written but **never executed**; run them against a local Supabase.
+- Real ChromaDB persistence/reopen behaviour, the real multilingual embedding model (Arabic/French quality), real Gemini calls and the Supabase Storage REST helpers were not exercised (the suite uses fakes; one real-Chroma test skips when `chromadb` is absent).
+- `RAG_MIN_SCORE`, per-document caps, chunk size (1000/150) and the condense step are untuned defaults.
+- Performance/memory figures in DEPLOYMENT are design bounds, not measurements.
+- Not built: Chroma snapshot backup, OCR for scanned PDFs, Celery/Redis, per-user storage quota beyond document/job counts, background execution of reindex/reconcile.
+- PyMuPDF is AGPL-3.0: confirm the licence is acceptable (or switch to `pypdfium2`).
 
 ## Current behavior / problems (Phase 1 analysis report)
 
