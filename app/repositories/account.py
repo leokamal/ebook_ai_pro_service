@@ -15,6 +15,11 @@ class AccountRepository:
     def __init__(self, service_db):
         self.db = service_db
 
+    def profile(self, user_id: str) -> dict:
+        rows = (self.db.table("profiles").select("generated_key,email,full_name,display_name,avatar_url,avatar_hidden,country,gender")
+                .eq("id", user_id).limit(1).execute().data)
+        return rows[0] if rows else {}
+
     def usage(self, user_id: str) -> dict:
         data = self.db.rpc("user_storage_usage", {"p_user": user_id}).execute().data
         row = (data[0] if isinstance(data, list) and data else data) or {}

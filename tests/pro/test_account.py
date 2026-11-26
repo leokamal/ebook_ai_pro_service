@@ -172,3 +172,19 @@ def test_claim_and_finish_never_revive_a_deleting_document(acct):
     assert row["status"] == "deleting"
     assert q.finish(job["id"], "w1", False, "x", None)
     assert row["status"] == "deleting"
+
+
+def test_me_returns_my_profile_and_falls_back_to_the_token(acct):
+    key = str(uuid.uuid4())
+    body = acct.c.get("/api/v1/me").json()                               # no profile row yet
+    assert body["generated_key"] is None and body["name"] == "Ana" and body["email"] == "a@x.test"
+    acct.w.tables["profiles"] = [
+        {"id": A, "generated_key": key, "email": "p@x.test", "full_name": "Ana Maria", "display_name": "Ani",
+         "avatar_url": "https://i/a.png", "avatar_hidden": False, "country": "MA", "gender": None},
+        {"id": B, "generated_key": str(uuid.uuid4()), "email": "b@x.test", "full_name": "Bob", "display_name": "Bob",
+         "avatar_url": None, "avatar_hidden": False, "country": None, "gender": None}]
+    body = acct.c.get("/api/v1/me").json()
+    assert (body["generated_key"], body["email"], body["name"], body["full_name"], body["avatar_url"],
+            body["country"]) == (key, "p@x.test", "Ani", "Ana Maria", "https://i/a.png", "MA")
+    acct.w.tables["profiles"][0]["avatar_hidden"] = True
+    assert acct.c.get("/api/v1/me").json()["avatar_url"] is None

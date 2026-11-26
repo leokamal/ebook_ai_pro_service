@@ -32,11 +32,11 @@ def db():
         conn.close()
 
 
-def as_role(conn, role, uid=None):
+def as_role(conn, role, uid=None, provider="google", **extra):
     conn.execute("reset role")
     if role != "postgres":
         conn.execute(f"set local role {role}")
-    claims = {"sub": uid, "role": role} if uid else {}
+    claims = {"sub": uid, "role": role, "app_metadata": {"provider": provider}, **extra} if uid else {}
     conn.execute("select set_config('request.jwt.claims', %s, true)", (json.dumps(claims),))
 
 
@@ -352,3 +352,84 @@ def test_rerunning_the_first_migration_keeps_the_upload_limit(db):
     as_role(db, "authenticated", a)
     assert denied(db, "insert into storage.objects (bucket_id, name, owner) values ('user-documents', %s, %s)",
                   (f"{a}/{uuid.uuid4()}/b.pdf", a))
+
+
+@pytest.mark.parametrize("claims,allowed", [
+    ({"provider": "google"}, True),
+    ({"provider": "facebook"}, True),
+    ({"provider": "email"}, False),
+    ({"provider": "email", "app_metadata": {"provider": "email", "providers": ["email", "google"]}}, True),
+    ({"provider": "email", "user_metadata": {"provider": "google"}}, False),   # user-editable: ignored
+    ({"provider": "google", "is_anonymous": True}, False),
+    ({"app_metadata": {}}, False),
+])
+def test_only_google_and_facebook_sessions_reach_data_and_storage(db, claims, allowed):
+    a = make_user(db)
+    doc = add_doc(db, a)                                                          # the user's own row
+    as_role(db, "authenticated", a, **claims)
+    assert db.execute("select count(*) from public.documents").fetchone()[0] == int(allowed)
+    conv = "insert into public.conversations (user_id, mode) values (%s,'all_documents')"
+    upload = "insert into storage.objects (bucket_id, name, owner) values ('user-documents', %s, %s)"
+    for sql, params in ((conv, (a,)), (upload, (f"{a}/{doc}/x.pdf", a))):
+        if allowed:
+            db.execute(sql, params)
+        else:
+            assert denied(db, sql, params)
+
+
+# ------------------------------------------------------------------ profiles (20261127000000_profiles.sql)
+PROFILE = ("select generated_key, email, full_name, display_name, avatar_url from public.profiles where id=%s")
+
+
+def signup(conn, meta, email=True):
+    uid = str(uuid.uuid4())
+    as_role(conn, "postgres")
+    conn.execute("insert into auth.users (id, email, raw_user_meta_data) values (%s, %s, %s)",
+                 (uid, f"{uid}@test.local" if email else None, json.dumps(meta)))
+    return uid
+
+
+def link(conn, uid, provider, data):
+    as_role(conn, "postgres")
+    conn.execute("insert into auth.identities (id, user_id, provider, provider_id, identity_data) "
+                 "values (gen_random_uuid(), %s, %s, %s, %s)", (uid, provider, str(uuid.uuid4()), json.dumps(data)))
+
+
+def test_each_new_user_gets_a_profile_from_the_provider(db):
+    uid = signup(db, {"full_name": "Ana", "picture": "https://img.test/a.png"})
+    key, email, full, display, image = db.execute(PROFILE, (uid,)).fetchone()
+    assert key and email == f"{uid}@test.local"
+    assert (full, display, image) == ("Ana", "Ana", "https://img.test/a.png")
+    link(db, uid, "facebook", {"name": "Other", "picture": "https://img.test/fb.png"})   # only fills empty fields
+    assert db.execute(PROFILE, (uid,)).fetchone() == (key, email, "Ana", "Ana", "https://img.test/a.png")
+
+
+def test_linked_account_supplies_missing_name_and_image(db):
+    uid = signup(db, {"avatar_url": "javascript:alert(1)"}, email=False)          # unsafe image, no name, no e-mail
+    _, email, full, display, image = db.execute(PROFILE, (uid,)).fetchone()
+    assert (email, full, image) == (None, None, None) and display.startswith("Reader")
+    link(db, uid, "google", {"full_name": "  <Zed> " + "z" * 300, "avatar_url": "https://img.test/g.png"})
+    _, _, full, display, image = db.execute(PROFILE, (uid,)).fetchone()
+    assert len(full) == 200 and display == "Zed " + "z" * 16 and image == "https://img.test/g.png"
+
+
+def test_users_edit_only_their_own_choices(db):
+    uid, other = signup(db, {"full_name": "Ana"}), signup(db, {"full_name": "Ana"})   # names need not be unique
+    key = db.execute(PROFILE, (uid,)).fetchone()[0]
+    as_role(db, "authenticated", uid)
+    assert db.execute("select count(*) from public.profiles").fetchone()[0] == 1
+    assert db.execute("update public.profiles set display_name='Ani', avatar_hidden=true, country='MA', "
+                      "gender='unspecified' where id=%s", (uid,)).rowcount == 1
+    for column, value in (("email", "x@x"), ("full_name", "x"), ("avatar_url", "https://x"),
+                          ("generated_key", str(uuid.uuid4())), ("display_name", "a!"), ("country", "morocco")):
+        assert denied(db, f"update public.profiles set {column}=%s where id=%s", (value, uid)), column
+    assert denied(db, "update public.profiles set display_name='Bad' where id=%s", (other,))
+    assert denied(db, "insert into public.profiles (id, display_name) values (%s,'Mine')", (other,))
+    as_role(db, "authenticated", uid, provider="email")
+    assert db.execute("select count(*) from public.profiles").fetchone()[0] == 0
+    # a later sign-in never overwrites the user's choices or the key
+    as_role(db, "postgres")
+    db.execute("update auth.users set raw_user_meta_data=%s where id=%s", (json.dumps({"full_name": "New"}), uid))
+    assert db.execute(PROFILE, (uid,)).fetchone()[:4:3] == (key, "Ani")
+    db.execute("delete from auth.users where id=%s", (uid,))
+    assert db.execute("select count(*) from public.profiles where id=%s", (uid,)).fetchone()[0] == 0

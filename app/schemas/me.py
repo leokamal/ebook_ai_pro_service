@@ -14,9 +14,14 @@ class Usage(BaseModel):
 
 class MeResponse(BaseModel):
     id: UUID
+    generated_key: Optional[UUID] = None
     email: Optional[str] = None
-    name: Optional[str] = None
-    avatar_url: Optional[str] = None
+    name: Optional[str] = None  # the user's chosen display name
+    full_name: Optional[str] = None
+    avatar_url: Optional[str] = None  # null when the user chose the default picture
+    avatar_hidden: bool = False
+    country: Optional[str] = None
+    gender: Optional[str] = None
     providers: list[str]
     usage: Usage
 

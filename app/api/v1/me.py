@@ -13,7 +13,13 @@ router = APIRouter(prefix="/me", tags=["account"])
 @router.get("", response_model=MeResponse, summary="Who am I, and how much of my space is used")
 def get_me(user: CurrentUserDep, repo: Annotated[AccountRepository, Depends(get_account_repo)]):
     usage, limits = repo.usage(user.id), repo.limits()  # the id comes only from the verified token
-    return {"id": user.id, "email": user.email, "name": user.name, "avatar_url": user.avatar_url,
+    profile = repo.profile(user.id)  # display data; the token is the fallback
+    hidden = bool(profile.get("avatar_hidden"))
+    return {"id": user.id, "generated_key": profile.get("generated_key"),
+            "email": profile.get("email") or user.email,
+            "name": profile.get("display_name") or user.name, "full_name": profile.get("full_name") or user.name,
+            "avatar_url": None if hidden else profile.get("avatar_url") or user.avatar_url, "avatar_hidden": hidden,
+            "country": profile.get("country"), "gender": profile.get("gender"),
             "providers": list(user.providers),
             "usage": {"documents": repo.document_count(user.id), "storage_bytes": usage["bytes"],
                       "storage_limit_bytes": limits["max_storage_bytes"], "objects": usage["objects"],

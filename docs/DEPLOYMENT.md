@@ -52,12 +52,12 @@ Startup/shutdown: the lifespan hook starts the job runner (no model loaded, Chro
 
 ## 3b. Sign-in providers and user space (one-time setup, dashboard work)
 
-1. **Supabase → Authentication → Providers**: enable **Google** and **Facebook**; **disable** anonymous sign-ins and e-mail/password signups.
+1. **Supabase → Authentication → Providers**: enable **Google** and **Facebook**; **disable** anonymous sign-ins and e-mail/password signups; **enable manual linking** (needed for `linkIdentity`).
 2. **Google Cloud**: configure the OAuth consent screen (scopes `openid email profile`), create a *Web* OAuth client with authorised redirect URI `https://<project-ref>.supabase.co/auth/v1/callback`, and paste the client id and secret into the Supabase Google provider.
 3. **Meta for Developers**: create an app with the Facebook Login product, add the same callback URL as a valid OAuth redirect URI, request `email` and `public_profile`, provide a privacy policy URL and a **data deletion instructions URL**, switch the app to **Live**, and paste the app id and secret into Supabase.
 4. **Supabase → Authentication → URL configuration**: add `<app-scheme>://login-callback` (and any web origin) to the redirect allow list. Keep asymmetric JWT signing keys.
-5. Apply `supabase/migrations/20261126000000_user_space.sql`.
-6. Provider secrets live only in the Supabase dashboard, never in this repository or on the API host. `AUTH_ALLOWED_PROVIDERS` (default `google,facebook`) makes the API refuse other providers; set it empty only for local development.
+5. Apply `supabase/migrations/20261126000000_user_space.sql`, then `20261127000000_profiles.sql`.
+6. Provider secrets live only in the Supabase dashboard, never in this repository or on the API host. `AUTH_ALLOWED_PROVIDERS` (default `google,facebook`) makes the API refuse other providers; set it empty only for local development. The database and Storage enforce the same rule through `public.app_limits.allowed_providers`, so change both together (e.g. when adding `apple`): `update public.app_limits set allowed_providers = array['google','facebook','apple'];`
 7. **iOS**: Apple's App Store guidelines generally require an equivalent privacy-preserving login (usually Sign in with Apple) when Google or Facebook login is offered. If you ship on iOS, enable the Apple provider and add `apple` to `AUTH_ALLOWED_PROVIDERS`.
 
 Text to publish as the data deletion instructions: "Open the app, go to Account, choose Delete account and confirm. Your account, uploaded PDFs, search index and chat history are permanently deleted." (Add a contact address for people who can no longer sign in.)

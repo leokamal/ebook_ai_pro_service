@@ -6,7 +6,8 @@ create table if not exists public.app_limits (
   max_storage_bytes bigint  not null default 104857600 check (max_storage_bytes >= 0),  -- 100 MB per user
   max_objects       integer not null default 220 check (max_objects >= 0),
   max_documents     integer not null default 200 check (max_documents >= 0),
-  max_conversations integer not null default 1000 check (max_conversations >= 0)
+  max_conversations integer not null default 1000 check (max_conversations >= 0),
+  allowed_providers text[]  not null default array['google','facebook']  -- empty = any (local dev only)
 );
 insert into public.app_limits (id) values (true) on conflict (id) do nothing;
 alter table public.app_limits enable row level security;
@@ -97,3 +98,33 @@ create trigger documents_row_limit before insert on public.documents
 drop trigger if exists conversations_row_limit on public.conversations;
 create trigger conversations_row_limit before insert on public.conversations
   for each row execute function public.enforce_row_limit();
+
+-- Sign-in providers. The API checks them too, but clients can reach PostgREST and Storage directly.
+-- Same rule as the API: never anonymous; `app_metadata` only (server-controlled), never `user_metadata`.
+create or replace function public.is_allowed_user()
+returns boolean language sql stable set search_path = '' as $$
+  select coalesce((
+    select not coalesce((auth.jwt() ->> 'is_anonymous')::boolean, false)
+       and (cardinality(l.allowed_providers) = 0
+            or coalesce(auth.jwt() -> 'app_metadata' ->> 'provider' = any (l.allowed_providers), false)
+            or coalesce(auth.jwt() -> 'app_metadata' -> 'providers' ?| l.allowed_providers, false))
+    from public.app_limits l
+  ), false)
+$$;
+revoke all on function public.is_allowed_user() from public, anon;
+grant execute on function public.is_allowed_user() to authenticated, service_role;
+
+-- RESTRICTIVE: ANDed with every ownership policy, so it can only narrow access.
+do $$ declare t text; begin
+  foreach t in array array['documents','conversations','messages','document_chunks','message_sources','processing_jobs'] loop
+    execute format('drop policy if exists %I on public.%I', t || '_provider', t);
+    execute format('create policy %I on public.%I as restrictive for all to authenticated '
+                   'using ((select public.is_allowed_user())) with check ((select public.is_allowed_user()))',
+                   t || '_provider', t);
+  end loop;
+end $$;
+
+drop policy if exists user_documents_provider on storage.objects;
+create policy user_documents_provider on storage.objects as restrictive for all to authenticated
+  using (bucket_id <> 'user-documents' or (select public.is_allowed_user()))
+  with check (bucket_id <> 'user-documents' or (select public.is_allowed_user()));
