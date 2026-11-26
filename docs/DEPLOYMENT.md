@@ -33,6 +33,7 @@ Free vs paid components: Supabase free tier (quota-limited: DB size, 1 GB storag
 1. Create the Supabase project and apply the migrations ([README](../README.md#supabase-setup-once-per-project)), in filename order. `20261126000000_user_space.sql` is required: it holds the only Storage upload policy.
 2. Environment (see `.env.example`; **placeholders only are committed**). Required: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `GEMINI_API_KEY`, `ADMIN_TOKEN`. With the local embedding provider also: `HF_TOKEN` (higher Hugging Face rate limits), `HF_HOME` on the disk. Defaults: bucket `user-documents`, collection `ebook_ai_pro_documents`, embeddings `gemini-embedding-2` (768 dimensions).
 3. Docker: `docker build -t ebook-ai . && docker run --env-file .env -p 8000:8000 -v ebook_ai_data:/data ebook-ai`. Render: connect the repo, use `render.yaml` (Docker runtime, disk at `/data`), fill the secret env vars.
+   **Render native Python runtime** (a service created by hand rather than from `render.yaml`): `.python-version` pins Python 3.11; set the environment variables in the dashboard. Without a persistent disk at `CHROMA_PERSIST_DIRECTORY` the index is lost on every deploy.
 4. Smoke test:
    - `GET /health` -> `{"status":"ok"}` (liveness); `GET /api/v1/health` -> `{"status":"ok","worker":"running","vector_index":{...}}` (503 `unconfigured` if a key is missing, 503 if the index needs a reindex).
    - With a real user token: register a PDF, poll `/documents/{id}/status` until `completed`, `POST /api/v1/search`, `POST /api/v1/chat`.
@@ -113,6 +114,7 @@ Memory: the process holds Chroma's index (plus, with the local provider, torch a
 | All calls `403 provider_not_allowed` | the user signed in with a provider not in `AUTH_ALLOWED_PROVIDERS` | enable it in the list or sign in with Google/Facebook |
 | Uploads refused by Storage | the user's space is full (or the migration's policy sees no `app_limits` row) | check `GET /api/v1/me`; adjust `public.app_limits` |
 | All `/api/v1` calls `401` | token expired/wrong project, JWKS unreachable, `SUPABASE_URL` mismatch (issuer check) | check the app uses the same project; check logs for `JWKS fetch failed` |
+| Log `Name or service not known` / `worker cannot reach Supabase` / `configuration: SUPABASE_URL ...` | the host in `SUPABASE_URL` does not exist: typo, another project's ref, or a paused/deleted project | copy the Project URL from the Supabase dashboard into the host's environment, then redeploy |
 | `/api/v1/health` 503 `unconfigured` | missing `SUPABASE_URL` / anon / service-role key | set env |
 | `/api/v1/health` 503 `needs_reindex` | embedding model or dimension changed | `POST /api/v1/admin/reindex` |
 | Document stays `uploaded` after registering | the user already had `MAX_ACTIVE_JOBS_PER_USER` documents queued or processing | the app calls `POST .../process` later |

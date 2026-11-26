@@ -4,7 +4,7 @@ import os
 import time
 from typing import Optional
 
-from app.core.config import get_settings
+from app.core.config import config_problems, get_settings
 
 logger = logging.getLogger("uvicorn.error")
 _runner = None
@@ -28,6 +28,8 @@ def start_worker() -> Optional[object]:
     """Start the job runner unless disabled/unconfigured. Cheap: loads no model, opens no Chroma."""
     global _runner
     s = get_settings()
+    for problem in config_problems(s):
+        logger.error("configuration: %s", problem)
     if os.environ.get("WORKER_ENABLED", "true").lower() in ("0", "false", "no") or not (
             s.configured and s.service_role_key):
         logger.info("Pro worker not started (disabled or unconfigured)")

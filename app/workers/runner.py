@@ -10,6 +10,8 @@ import threading
 import uuid
 from typing import Callable, Optional, Protocol
 
+import httpx
+
 from app.core.exceptions import NotFound, ServiceUnavailable
 from app.services.ingestion import LeaseLost
 from app.services.pdf_extraction import IngestError
@@ -99,14 +101,22 @@ class ThreadJobRunner:
                 self.on_start()
             except Exception:
                 logger.exception("startup reconcile failed (run POST /api/v1/admin/reconcile later)")
+        unreachable = 0
         while not self._stop.is_set():
+            wait = self.poll
             try:
                 busy = self.run_once()
                 if self.janitor:
                     self.janitor()
+                unreachable = 0
+            except httpx.TransportError as e:  # DNS/network: one line and back off, no traceback every poll
+                unreachable += 1
+                wait = min(self.poll * 2 ** min(unreachable, 6), max(self.poll, 300))
+                logger.error("worker cannot reach Supabase (%s: %s); retrying in %.0fs", type(e).__name__, e, wait)
+                busy = False
             except Exception:
                 logger.exception("worker iteration failed")
                 busy = False
             if not busy:
-                self._stop.wait(self.poll)
+                self._stop.wait(wait)
         self.alive = False

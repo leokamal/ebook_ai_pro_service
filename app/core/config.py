@@ -3,13 +3,15 @@
 Never hardcode secrets.
 """
 import os
+import socket
 from dataclasses import dataclass
 from typing import Optional
+from urllib.parse import urlsplit
 
 
 def _env(*names, default=None):
     for n in names:
-        v = os.environ.get(n)
+        v = os.environ.get(n, "").strip()  # a pasted trailing space/newline breaks URLs and keys
         if v:
             return v
     return default
@@ -79,6 +81,24 @@ def _embedding() -> dict:
     model_var, model, dim_var, dim = _EMBEDDINGS.get(provider, _EMBEDDINGS[Settings.embedding_provider])
     return {"embedding_provider": provider, "embedding_model": _env(model_var, default=model),
             "embedding_dimension": int(_env(dim_var, default=dim))}
+
+
+def config_problems(s: Settings) -> list[str]:
+    """Likely misconfigurations, for the startup log. Messages never contain a key."""
+    out = []
+    url = urlsplit(s.supabase_url)
+    if s.supabase_url and (url.scheme not in ("https", "http") or not url.hostname or url.path):
+        out.append("SUPABASE_URL must look like https://<project-ref>.supabase.co (no path, no quotes)")
+    elif url.hostname:
+        try:
+            socket.getaddrinfo(url.hostname, 443)
+        except OSError:
+            out.append(f"SUPABASE_URL host {url.hostname} does not resolve: wrong project ref, or the project "
+                       "is paused or deleted")
+    if s.anon_key.startswith("sb_secret_"):
+        out.append("SUPABASE_ANON_KEY holds a SECRET key: use the publishable (anon) key, and rotate the secret "
+                   "key if it was ever shipped in a client")
+    return out
 
 
 def get_settings() -> Settings:
