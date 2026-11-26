@@ -23,7 +23,7 @@ class FakeLLM:
     def __init__(self, *replies):
         self.replies, self.calls = list(replies), []
 
-    def generate(self, system, messages):
+    def generate(self, system, messages, summarize=False):
         self.calls.append((system, list(messages)))
         r = self.replies.pop(0) if self.replies else "ok"
         if isinstance(r, Exception):
@@ -31,7 +31,7 @@ class FakeLLM:
         return LLMResult(r, {"input_tokens": 10, "output_tokens": 7})
 
 
-def _fake_stream(self, system, messages):
+def _fake_stream(self, system, messages, summarize=False):
     """Streams the next scripted reply in 4-char chunks, then a usage dict. A reply may be an Exception
     (raised before any chunk) or a (text, Exception) tuple (raised after the text: a mid-stream failure)."""
     self.calls.append((system, list(messages)))
@@ -363,9 +363,9 @@ def test_gemini_quota_is_mapped_and_not_retried(gemini):
 
 
 def test_gemini_retries_transient_errors_then_gives_up(gemini):
-    svc, model = gemini(TimeoutError("timed out"), Exception("503 Service Unavailable"), "ok")
+    svc, model = gemini(ConnectionError("reset"), Exception("503 Service Unavailable"), "ok")
     assert svc.generate("s", []).text == "ok" and model.calls == 3
-    svc2, model2 = gemini(TimeoutError("t"), TimeoutError("t"), TimeoutError("t"), retries=2)
+    svc2, model2 = gemini(Exception("503"), Exception("503"), Exception("503"), retries=2)
     with pytest.raises(LLMUnavailable):
         svc2.generate("s", [])
     assert model2.calls == 3

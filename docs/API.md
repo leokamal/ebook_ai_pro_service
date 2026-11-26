@@ -74,7 +74,7 @@ or, if generation fails after the stream started: `event: error data: {"code": "
 - **`done.answer` is authoritative.** It equals the concatenated tokens for a normal cited answer. It differs when the answer was turned into a refusal (the documents do not contain it, or the answer had no valid citation) or when unknown citation markers were stripped: replace the streamed text with `done.answer`. For a "not found" refusal the only token is the refusal sentence itself (the internal marker is never streamed).
 - `sources` is sent after generation (citations need the full text) and `refused: true` implies `sources: []`.
 - The turn (your message + the answer) is stored only when `done` is sent. If the client disconnects, nothing is stored.
-- At most `CHAT_MAX_CONCURRENT_STREAMS` (default 2) streams per user may be in flight; another one gets `429 rate_limited` (`Retry-After: 5`). A generation that runs longer than `LLM_STREAM_DEADLINE_SECONDS` (120) ends with an `error` event (`llm_unavailable`) and stores nothing.
+- At most `CHAT_MAX_CONCURRENT_STREAMS` (default 2) streams per user may be in flight; another one gets `429 rate_limited` (`Retry-After: 5`). A generation that runs longer than `LLM_STREAM_DEADLINE_SECONDS` (120) ends with an `error` event (`llm_unavailable`) and stores nothing. With `summarize: true` the limit is at least `LLM_TIMEOUT_SECONDS` + 60 (240), and the first token can take a while: do not time the request out earlier in the app.
 - `usage.output_tokens` is Gemini's count when available, otherwise an estimate.
 - Dart sketch: `http.Client().send(request)`, then split `response.stream.transform(utf8.decoder)` on `
 

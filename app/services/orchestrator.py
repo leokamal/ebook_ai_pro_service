@@ -14,7 +14,7 @@ from typing import Iterator
 
 from app.core.exceptions import AppError
 from app.prompts.rag import (CONDENSE_SYSTEM, NO_ANSWER_SENTINEL, SUMMARY_RETRIEVAL_QUERY, SYSTEM_PROMPT, user_turn)
-from app.services.llm import LLMProvider, LLMUnavailable
+from app.services.llm import LLMProvider, LLMTimeout, LLMUnavailable
 from app.services.rag_parts import (CitationService, ContextBuilder, ConversationMemoryService, RerankingService,
                                     approx_tokens, not_found_message)
 from app.services.retrieval import RetrievalService, resolve_searchable_documents
@@ -80,6 +80,10 @@ class RAGOrchestrator:
         ranked = self.reranker.rerank(hits, top_n, per_doc_cap=multi)  # per-document cap only for multi scope
         p.sources_block, p.used = self.context.build(ranked, group=multi)
         p.refuse = not p.used
+        if summarize:
+            logger.info("summarize input: %d chars (sources=%d, history=%d, chunks=%d, conversation=%s)",
+                        sum(len(m["content"]) for m in self._llm_messages(p)), len(p.sources_block),
+                        sum(len(m["content"]) for m in p.history), len(p.used), conv["id"])
         return p
 
     def _llm_messages(self, p: Prepared) -> list:
@@ -127,7 +131,7 @@ class RAGOrchestrator:
         p = self.prepare(conversation_id, message, summarize)
         if p.refuse:
             return self._finish(p, not_found_message(message), [], {}, True)
-        result = self.llm.generate(SYSTEM_PROMPT, self._llm_messages(p))
+        result = self.llm.generate(SYSTEM_PROMPT, self._llm_messages(p), summarize=p.summarize)
         return self._complete(p, result.text, result.usage)
 
     # ------------------------------------------------------------------ streaming
@@ -147,7 +151,7 @@ class RAGOrchestrator:
             yield "sources", {"sources": [_source_dict(c) for c in r.sources]}
             yield "done", {"message_id": r.message_id, "answer": r.answer, "refused": r.refused, "usage": r.usage}
         except AppError as e:
-            logger.info("stream failed: %s", e.code)
+            logger.info("stream failed: %s", getattr(e, "log_code", e.code))
             yield "error", {"code": e.code, "message": e.message}
         except Exception:
             logger.exception("stream failed")
@@ -156,11 +160,14 @@ class RAGOrchestrator:
     def _stream_generation(self, p: Prepared) -> Iterator[tuple]:
         parts, usage = [], {}
         buf, decided, sentinel = "", False, False  # hold back the first chars: a refusal must not leak the sentinel
-        deadline = time.monotonic() + getattr(self.cfg, "llm_stream_deadline", 120.0)
-        for chunk in self.llm.stream(SYSTEM_PROMPT, self._llm_messages(p)):
+        limit = getattr(self.cfg, "llm_stream_deadline", 120.0)
+        if p.summarize:  # the first token may take the whole read timeout: leave time to stream after it
+            limit = max(limit, getattr(self.cfg, "llm_timeout", 180.0) + 60)
+        deadline = time.monotonic() + limit
+        for chunk in self.llm.stream(SYSTEM_PROMPT, self._llm_messages(p), summarize=p.summarize):
             if time.monotonic() > deadline:  # a slow upstream must not hold a worker thread forever
-                logger.warning("stream deadline exceeded (conversation=%s)", p.conv["id"])
-                raise LLMUnavailable()
+                logger.warning("llm_timeout: stream deadline exceeded (conversation=%s)", p.conv["id"])
+                raise LLMTimeout()
             if isinstance(chunk, dict):  # provider reports usage as a final dict
                 usage = chunk
                 continue

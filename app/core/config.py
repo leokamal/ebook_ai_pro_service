@@ -34,8 +34,9 @@ class Settings:
     chroma_collection: str = "ebook_ai_pro_documents"
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.5-flash"
-    llm_timeout: float = 60.0
-    llm_max_retries: int = 2
+    gemini_fallback_model: str = ""  # used when the model stays unavailable (503); empty = off
+    llm_timeout: float = 180.0
+    llm_max_retries: int = 1
     llm_max_output_tokens: int = 1024
     llm_stream_deadline: float = 120.0
     history_messages: int = 6
@@ -117,6 +118,7 @@ def get_settings() -> Settings:
         chroma_collection=_env("CHROMA_COLLECTION_NAME", default=Settings.chroma_collection),
         gemini_api_key=_env("GEMINI_API_KEY", default=""),
         gemini_model=_env("GEMINI_MODEL", default=Settings.gemini_model),
+        gemini_fallback_model=_env("GEMINI_FALLBACK_MODEL", default=""),
         llm_timeout=float(_env("LLM_TIMEOUT_SECONDS", default=Settings.llm_timeout)),
         llm_max_retries=int(_env("LLM_MAX_RETRIES", default=Settings.llm_max_retries)),
         llm_max_output_tokens=int(_env("LLM_MAX_OUTPUT_TOKENS", default=Settings.llm_max_output_tokens)),

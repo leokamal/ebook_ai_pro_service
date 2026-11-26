@@ -134,14 +134,15 @@ def get_conversations_repo(db=Depends(get_user_db)):
 
 
 @lru_cache(maxsize=1)
-def _llm(api_key: str, model: str, timeout: float, retries: int, max_tokens: int):
+def _llm(api_key: str, model: str, timeout: float, retries: int, max_tokens: int, fallback: str):
     from app.services.llm import GeminiService
-    return GeminiService(api_key, model, timeout, retries, max_tokens)
+    return GeminiService(api_key, model, timeout, retries, max_tokens, fallback_model=fallback)
 
 
 def get_llm():
     s = get_settings()
-    return _llm(s.gemini_api_key, s.gemini_model, s.llm_timeout, s.llm_max_retries, s.llm_max_output_tokens)
+    return _llm(s.gemini_api_key, s.gemini_model, s.llm_timeout, s.llm_max_retries, s.llm_max_output_tokens,
+                s.gemini_fallback_model)
 
 
 def get_orchestrator(user: AuthUser = Depends(get_current_user), db=Depends(get_user_db),
