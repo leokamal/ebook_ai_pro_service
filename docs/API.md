@@ -40,7 +40,7 @@ A registered file cannot be deleted or replaced directly in Storage. To replace 
 - `POST /api/v1/documents/{id}/process` (only from `uploaded`) and `/retry` (only from `failed`) -> `202 {"document_id","status":"queued","job_id"}`; wrong state -> `409`; 5 documents already queued or processing -> `429 quota_exceeded`.
 - `DELETE /api/v1/documents/{id}` -> `202` (asynchronous: vectors, file and row are removed).
 Failures set `status=failed` with a user-safe `error_message` (e.g. scanned PDF without text, corrupt or password-protected PDF, too many pages).
-Admin (`X-Admin-Token`): `POST /api/v1/admin/reindex` (after changing `EMBEDDING_MODEL`), `POST /api/v1/admin/reconcile` (rebuild documents whose vectors were lost).
+Admin (`X-Admin-Token`): `POST /api/v1/admin/reindex` (after changing the embedding provider or model), `POST /api/v1/admin/reconcile` (rebuild documents whose vectors were lost).
 
 ### Conversations and chat (Phase 5)
 Auth required on all routes. Resources of other users return `404`.
@@ -82,7 +82,7 @@ or, if generation fails after the stream started: `event: error data: {"code": "
 
 ### Error envelope, request ids, OpenAPI
 - Every `/api/v1` error: `{"error": {"code": "...", "message": "...", "request_id": "..."}}`. `request_id` equals the `X-Request-ID` response header (a client-supplied `X-Request-ID` of 8-64 chars `[A-Za-z0-9._-]` is reused, otherwise one is generated). Quote it when reporting a problem.
-- Codes: `unauthorized`(401, `WWW-Authenticate: Bearer`), `forbidden`(403, admin only), `not_found`(404, also for other users' resources), `conflict`(409), `document_not_indexed`(409), `validation_error`(400/422), `payload_too_large`(413), `file_not_found`/`invalid_file`(422), `quota_exceeded`(429, per-user limits), `rate_limited`(429, `Retry-After`), `llm_quota_exceeded`(429, `Retry-After`), `llm_unavailable`(503), `index_unavailable`(503), `storage_unavailable`(503), `internal_error`(500, details only in server logs).
+- Codes: `unauthorized`(401, `WWW-Authenticate: Bearer`), `forbidden`(403, admin only), `not_found`(404, also for other users' resources), `conflict`(409), `document_not_indexed`(409), `validation_error`(400/422), `payload_too_large`(413), `file_not_found`/`invalid_file`(422), `quota_exceeded`(429, per-user limits), `rate_limited`(429, `Retry-After`), `llm_quota_exceeded`(429, `Retry-After`), `llm_unavailable`(503), `embedding_quota_exceeded`(429, `Retry-After`; search and chat), `embedding_unavailable`(503; search and chat), `index_unavailable`(503), `storage_unavailable`(503), `internal_error`(500, details only in server logs).
 - Interactive docs: `/docs` (Swagger UI, "Authorize" accepts the Supabase access token) and `/openapi.json`. `tests/pro/test_streaming_and_openapi.py` fails if a required endpoint, the bearer scheme, the error schema or the SSE description disappears.
 
 ## Direct Supabase access (current app)

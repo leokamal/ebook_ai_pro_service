@@ -1,10 +1,7 @@
---extra-index-url https://download.pytorch.org/whl/cpu
 fastapi
 uvicorn
 pysqlite3-binary; sys_platform == "linux"
 chromadb
-sentence_transformers
-torch
 PyMuPDF
 PyJWT[crypto]
 httpx

@@ -4,7 +4,7 @@ import pytest
 
 from app.core.exceptions import Conflict, NotFound, ServiceUnavailable
 from app.repositories.documents import DocumentRepository
-from app.services.embedding import EmbeddingService
+from app.services.embedding import HuggingFaceEmbedder
 from app.services.retrieval import RetrievalService, resolve_searchable_documents
 from app.services.vector_store import ChromaVectorStore, ChunkRecord, chunk_id
 from tests.pro.fakechroma import FakeChromaClient
@@ -31,7 +31,7 @@ class FakeModel:
 
 def _embedder(model=None):
     m = model or FakeModel()
-    return EmbeddingService(MODEL, DIM, batch_size=2, model_factory=lambda _n: m), m
+    return HuggingFaceEmbedder(MODEL, DIM, batch_size=2, model_factory=lambda _n: m), m
 
 
 def _store(client=None, model=MODEL, dim=DIM):
@@ -50,14 +50,14 @@ def test_embedding_batches_and_dimension_guard():
     assert len(out) == 5 and all(len(v) == DIM for v in out)
     assert [len(c) for c in model.calls] == [2, 2, 1]  # bounded batches
     assert not _embedder()[0].loaded
-    bad = EmbeddingService(MODEL, 999, model_factory=lambda _n: FakeModel())
+    bad = HuggingFaceEmbedder(MODEL, 999, model_factory=lambda _n: FakeModel())
     with pytest.raises(ServiceUnavailable):
         bad.embed_query("x")
 
 
 def test_e5_prefixes():
     m = FakeModel()
-    e = EmbeddingService("intfloat/multilingual-e5-small", DIM, model_factory=lambda _n: m)
+    e = HuggingFaceEmbedder("intfloat/multilingual-e5-small", DIM, model_factory=lambda _n: m)
     e.embed_query("cat")
     e.embed_documents(["dog"])
     assert m.calls[0] == ["query: cat"] and m.calls[1] == ["passage: dog"]
@@ -245,5 +245,5 @@ def test_embedding_raises_short_max_seq_length():
     class Short(FakeModel):
         max_seq_length = 128
     m = Short()
-    EmbeddingService(MODEL, DIM, model_factory=lambda _n: m).embed_query("cat")
+    HuggingFaceEmbedder(MODEL, DIM, model_factory=lambda _n: m).embed_query("cat")
     assert m.max_seq_length == 512

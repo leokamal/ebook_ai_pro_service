@@ -1,14 +1,14 @@
 # Render blueprint for E-Book AI Pro (see docs/DEPLOYMENT.md).
-# A persistent disk requires a paid instance. Size the instance for torch + the embedding model (>= 2 GB RAM).
+# A persistent disk requires a paid instance. With EMBEDDING_PROVIDER=huggingface size for torch + the model (>= 2 GB RAM).
 services:
   - type: web
     name: ebook-ai-service
     runtime: docker
-    plan: standard            # check current plan sizes; 2 GB RAM is the practical minimum
+    plan: standard            # check current plan sizes; measure memory before choosing a smaller one
     healthCheckPath: /health
     disk:
       name: ebook-ai-data
-      mountPath: /data         # holds the Chroma index and the Hugging Face model cache
+      mountPath: /data         # holds the Chroma index (and the model cache for the local provider)
       sizeGB: 5
     envVars:
       - key: ENVIRONMENT
@@ -29,10 +29,12 @@ services:
         sync: false
       - key: GEMINI_MODEL
         value: gemini-3.5-flash
-      - key: EMBEDDING_MODEL
-        value: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
-      - key: EMBEDDING_DIMENSION
-        value: "384"
+      - key: EMBEDDING_PROVIDER
+        value: gemini
+      - key: GEMINI_EMBEDDING_MODEL
+        value: gemini-embedding-2
+      - key: GEMINI_EMBEDDING_DIMENSION
+        value: "768"
       - key: SUPABASE_STORAGE_BUCKET
         value: user-documents
       - key: CHROMA_PERSIST_DIRECTORY

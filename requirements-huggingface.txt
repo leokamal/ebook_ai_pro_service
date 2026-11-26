@@ -1,0 +1,5 @@
+# Only for EMBEDDING_PROVIDER=huggingface (local model, CPU-only torch).
+--extra-index-url https://download.pytorch.org/whl/cpu
+-r requirements.txt
+sentence_transformers
+torch

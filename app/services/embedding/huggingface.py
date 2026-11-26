@@ -1,11 +1,11 @@
-"""Embedding service (sync/blocking: call it from `def` routes or the threadpool/worker).
+"""Hugging Face (sentence-transformers) embedding strategy: the model runs locally on CPU.
 
-The model is loaded lazily and cached, so importing this module and starting the server stay cheap.
-One model name + dimension is configured; the vector store refuses vectors of any other dimension.
+Needs the extra packages in requirements-huggingface.txt. The model is loaded lazily and cached, so importing
+this module and starting the server stay cheap.
 """
 import logging
 import threading
-from typing import Callable, Optional, Protocol, Sequence
+from typing import Callable, Optional, Sequence
 
 from app.core.exceptions import ServiceUnavailable
 
@@ -16,14 +16,6 @@ MAX_SEQ_LENGTH = 512
 _PREFIXES = {"e5": ("query: ", "passage: "), "bge-m3": ("", "")}
 
 
-class Embedder(Protocol):
-    model_name: str
-    dimension: int
-
-    def embed_documents(self, texts: Sequence[str]) -> list[list[float]]: ...
-    def embed_query(self, text: str) -> list[float]: ...
-
-
 def _prefixes(model_name: str):
     name = model_name.lower()
     for key, pair in _PREFIXES.items():
@@ -32,7 +24,7 @@ def _prefixes(model_name: str):
     return "", ""
 
 
-class EmbeddingService:
+class HuggingFaceEmbedder:
     def __init__(self, model_name: str, dimension: int, batch_size: int = 32,
                  model_factory: Optional[Callable[[str], object]] = None):
         self.model_name, self.dimension, self.batch_size = model_name, dimension, batch_size
@@ -48,7 +40,11 @@ class EmbeddingService:
                 if self._factory:
                     model = self._factory(self.model_name)
                 else:
-                    from sentence_transformers import SentenceTransformer  # lazy: torch is heavy
+                    try:
+                        from sentence_transformers import SentenceTransformer  # lazy: torch is heavy
+                    except ImportError:
+                        logger.error("EMBEDDING_PROVIDER=huggingface needs requirements-huggingface.txt")
+                        raise ServiceUnavailable("Embedding service not configured") from None
                     model = SentenceTransformer(self.model_name, device="cpu")
                 real = model.get_sentence_embedding_dimension()
                 if real != self.dimension:  # never let a wrong EMBEDDING_DIMENSION create a mixed index

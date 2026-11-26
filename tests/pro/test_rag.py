@@ -7,7 +7,7 @@ from app.core.exceptions import Conflict, NotFound
 from app.prompts.rag import SYSTEM_PROMPT
 from app.repositories.conversations import ConversationRepository, MessageWriter
 from app.repositories.documents import DocumentRepository
-from app.services.embedding import EmbeddingService
+from app.services.embedding import HuggingFaceEmbedder
 from app.services.llm import GeminiService, LLMQuotaError, LLMResult, LLMUnavailable
 from app.services.orchestrator import RAGOrchestrator
 from app.services.rag_parts import (CitationService, ContextBuilder, ConversationMemoryService, RerankingService,
@@ -65,7 +65,7 @@ class Rig:
         self.tables = {"documents": [], "conversations": [], "messages": [], "message_sources": []}
         self.client = FakeChromaClient()
         self.store = ChromaVectorStore("p", "col", MODEL, DIM, client_factory=lambda _p: self.client)
-        self.embedder = EmbeddingService(MODEL, DIM, model_factory=lambda _n: FakeModel())
+        self.embedder = HuggingFaceEmbedder(MODEL, DIM, model_factory=lambda _n: FakeModel())
         self.docs = {}
 
     def add_doc(self, user, title, chunks, status="completed", index_state="indexed"):

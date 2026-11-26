@@ -16,9 +16,12 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends gosu \
     && rm -rf /var/lib/apt/lists/*
 
-# dependencies first (cached layer); requirements.txt pulls CPU-only torch via the extra index
-COPY requirements.txt .
-RUN pip install -r requirements.txt
+# dependencies first (cached layer). The local embedding model (torch) is optional:
+#   docker build --build-arg INSTALL_HUGGINGFACE=true -t ebook-ai .
+ARG INSTALL_HUGGINGFACE=false
+COPY requirements.txt requirements-huggingface.txt ./
+RUN if [ "$INSTALL_HUGGINGFACE" = "true" ]; then pip install -r requirements-huggingface.txt; \
+    else pip install -r requirements.txt; fi
 
 COPY . .
 

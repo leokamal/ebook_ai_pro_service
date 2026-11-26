@@ -24,8 +24,9 @@ class Settings:
     jwt_secret: Optional[str]
     storage_bucket: str
     environment: str
-    embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-    embedding_dimension: int = 384
+    embedding_provider: str = "gemini"  # gemini | huggingface
+    embedding_model: str = "gemini-embedding-2"  # the ACTIVE provider's model and dimension
+    embedding_dimension: int = 768
     embed_batch: int = 32
     chroma_dir: str = "./chroma_data"
     chroma_collection: str = "ebook_ai_pro_documents"
@@ -62,6 +63,24 @@ def _providers() -> tuple:
     return tuple(p.strip().lower() for p in raw.split(",") if p.strip())
 
 
+# provider -> (model variable, default model, dimension variable, default dimension). Separate variables per
+# provider, so switching is a change of EMBEDDING_PROVIDER alone. EMBEDDING_MODEL/_DIMENSION are Hugging Face's.
+_EMBEDDINGS = {
+    "gemini": ("GEMINI_EMBEDDING_MODEL", Settings.embedding_model,
+               "GEMINI_EMBEDDING_DIMENSION", Settings.embedding_dimension),
+    "huggingface": ("EMBEDDING_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+                    "EMBEDDING_DIMENSION", 384),
+}
+
+
+def _embedding() -> dict:
+    provider = _env("EMBEDDING_PROVIDER", default=Settings.embedding_provider).strip().lower()
+    # an unknown name is kept as is: the embedder factory refuses it with a clear log line
+    model_var, model, dim_var, dim = _EMBEDDINGS.get(provider, _EMBEDDINGS[Settings.embedding_provider])
+    return {"embedding_provider": provider, "embedding_model": _env(model_var, default=model),
+            "embedding_dimension": int(_env(dim_var, default=dim))}
+
+
 def get_settings() -> Settings:
     url = (_env("SUPABASE_URL", default="") or "").rstrip("/")
     return Settings(
@@ -72,8 +91,7 @@ def get_settings() -> Settings:
         jwt_secret=_env("SUPABASE_JWT_SECRET"),
         storage_bucket=_env("SUPABASE_STORAGE_BUCKET", default="user-documents"),
         environment=_env("ENVIRONMENT", default="development"),
-        embedding_model=_env("EMBEDDING_MODEL", default=Settings.embedding_model),
-        embedding_dimension=int(_env("EMBEDDING_DIMENSION", default=Settings.embedding_dimension)),
+        **_embedding(),
         embed_batch=int(_env("EMBED_BATCH", default=Settings.embed_batch)),
         chroma_dir=_env("CHROMA_PERSIST_DIRECTORY", default=Settings.chroma_dir),
         chroma_collection=_env("CHROMA_COLLECTION_NAME", default=Settings.chroma_collection),

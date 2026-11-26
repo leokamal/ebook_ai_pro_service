@@ -4,7 +4,7 @@ FastAPI backend for **E-Book AI Pro**: every user has a private PDF library and 
 
 Users sign in with **Google or Facebook** (Supabase Auth) and each gets a private, size-limited space for their PDFs, with in-app account deletion ([setup](docs/DEPLOYMENT.md#3b-sign-in-providers-and-user-space-one-time-setup-dashboard-work)).
 
-Stack: Python 3.11, FastAPI, Supabase (Auth, Postgres + RLS, Storage), ChromaDB (the only vector store; persistent, in-process, never exposed), PyMuPDF, a multilingual sentence-transformers model, Gemini. No pgvector, no paid vector database. The previous "E-Book AI" single-library service has been removed; this repository is Pro only (the old code is in git history, commit `first init`).
+Stack: Python 3.11, FastAPI, Supabase (Auth, Postgres + RLS, Storage), ChromaDB (the only vector store; persistent, in-process, never exposed), PyMuPDF, Gemini (answers and, by default, embeddings; a local sentence-transformers model is optional). No pgvector, no paid vector database. The previous "E-Book AI" single-library service has been removed; this repository is Pro only (the old code is in git history, commit `first init`).
 
 Docs: [docs/API.md](docs/API.md) (contract for the Flutter app) · [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) (setup, hosting, recovery, runbook) · [docs/features/ebook_ai_pro_backend.md](docs/features/ebook_ai_pro_backend.md) (design + implementation status) · [CLAUDE.md](CLAUDE.md) (engineering notes and invariants). Interactive API docs at `/docs` when running.
 
@@ -46,7 +46,7 @@ app/
   api/v1/       me (account), documents, conversations, chat (+stream), search, health, admin
   schemas/      Pydantic request/response models
   repositories/ PostgREST access (user-scoped = RLS; service-role methods always filter by user_id)
-  services/     embedding, vector_store (Chroma), retrieval, ingestion, maintenance, rag_parts, llm, orchestrator, pdf_extraction
+  services/     embedding/ (providers + factory), vector_store (Chroma), retrieval, ingestion, maintenance, rag_parts, llm, orchestrator, pdf_extraction
   workers/      DB-backed job runner (+ manager started from the app lifespan)
   prompts/      all prompt text
 supabase/migrations/       SQL: Pro schema, RLS, storage policies, job RPCs (+ the historical `books` migration, see below)
@@ -65,6 +65,8 @@ cp .env.example .env                                      # fill in the placehol
 python main.py                                            # or: uvicorn main:app --reload   (keep a single worker)
 pytest                                                    # no network, no model downloads
 ```
+
+Embeddings come from the Gemini API by default. To run the model locally instead, `pip install -r requirements-huggingface.txt` and set `EMBEDDING_PROVIDER=huggingface` ([details](docs/DEPLOYMENT.md#embedding-providers)).
 
 ### Supabase setup (once per project)
 1. Create a project. Apply `supabase/migrations/*.sql` (`supabase db push`, or paste them in the SQL editor in filename order; do not skip any: the second holds the Storage upload policy, the third creates `profiles`). PostgreSQL 15+ is required (`ON DELETE SET NULL (column)`).
@@ -86,7 +88,7 @@ pytest                                                    # no network, no model
 | Everything offline (unit, API, two-user isolation, streaming, OpenAPI contract) | `pytest` | nothing (fakes for Supabase, Chroma, embeddings, Gemini) |
 | SQL: RLS, column grants, storage policies, job RPC privileges | `SUPABASE_TEST_DB_URL=... pytest tests/pro/integration -m integration` | a real Postgres with the Supabase schema (`supabase start`), `pip install "psycopg[binary]"` |
 
-Not exercised by the automated suite, so check on a staging project before launch: the SQL integration suite on a real Supabase stack, real ChromaDB persistence (one test is skipped unless `chromadb` is installed), the real multilingual embedding model (Arabic/French retrieval quality, `RAG_MIN_SCORE` tuning), real Gemini calls, and the Storage REST helpers in `supabase_storage.py`.
+Not exercised by the automated suite, so check on a staging project before launch: the SQL integration suite on a real Supabase stack, real ChromaDB persistence (one test is skipped unless `chromadb` is installed), real embeddings from either provider (Arabic/French retrieval quality, `RAG_MIN_SCORE` tuning, Gemini quotas), real Gemini calls, and the Storage REST helpers in `supabase_storage.py`.
 
 ## Deployment
 

@@ -3,7 +3,7 @@ import os
 import uuid
 
 from app.repositories.documents import ChunkRepository, DocumentAdminRepository
-from app.services.embedding import EmbeddingService
+from app.services.embedding import HuggingFaceEmbedder
 from app.services.ingestion import IngestConfig, IngestionService
 from app.services.vector_store import ChromaVectorStore
 from tests.pro.fakechroma import FakeChromaClient
@@ -103,7 +103,7 @@ class World:
         self.service = self.make_service()
 
     def make_service(self, model=None, pages=None):
-        embedder = EmbeddingService(MODEL, DIM, batch_size=2, model_factory=lambda _n: model or self.model)
+        embedder = HuggingFaceEmbedder(MODEL, DIM, batch_size=2, model_factory=lambda _n: model or self.model)
         return IngestionService(self.docs, self.chunks, self.storage, embedder, self.store,
                                 IngestConfig(bucket="user-documents", embed_batch=2),
                                 open_pdf=make_opener(pages if pages is not None else self.pages),

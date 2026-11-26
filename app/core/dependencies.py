@@ -23,14 +23,15 @@ def get_current_user(creds: Optional[HTTPAuthorizationCredentials] = Security(_b
 
 # ---- infrastructure singletons (lazy; creating them loads no model and opens no database)
 @lru_cache(maxsize=1)
-def _embedder(model: str, dimension: int, batch: int):
-    from app.services.embedding import EmbeddingService
-    return EmbeddingService(model, dimension, batch)
+def _embedder(provider: str, model: str, dimension: int, batch: int, api_key: str):
+    from app.services.embedding import create_embedder
+    return create_embedder(provider, model, dimension, batch, api_key)
 
 
 def get_embedding_service():
     s = get_settings()
-    return _embedder(s.embedding_model, s.embedding_dimension, s.embed_batch)
+    return _embedder(s.embedding_provider, s.embedding_model, s.embedding_dimension, s.embed_batch,
+                     s.gemini_api_key)
 
 
 _created: dict = {}
