@@ -1,6 +1,8 @@
 # Schema hardening and multi-PDF upload
 
-Status: planned (not implemented).
+Status: **implemented**. Offline tests pass; SQL tests pass on plain Postgres 17 with a stand-in for the Supabase `auth`/`storage` schemas, not on a real Supabase stack. The `can_upload` index check (finding 11) is still manual.
+
+**Deviation:** neither migration had been applied anywhere, so on request they were edited in place instead of adding `20261127000000_hardening.sql`. Consequences: `claim_processing_job` and `finish_job` are defined only in the first file and the upload policy only in the second, which removes finding 9 in code (no doc workaround); the `file_name` rule is part of the table check (no separate constraint); there is no function to drop and no deploy-order window. The text below is the original plan.
 
 Fix the findings of the review of `20261125000000_pro_schema.sql` and `20261126000000_user_space.sql`, and make sure a user can upload several PDFs, including many at once. Unchanged: Supabase, ChromaDB, Gemini, the Flutter upload-then-register flow, one uvicorn worker, response shapes. Both existing migrations stay untouched; all SQL goes in one new migration.
 

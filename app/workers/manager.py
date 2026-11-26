@@ -45,11 +45,15 @@ def start_worker() -> Optional[object]:
     maint = Maintenance(DocumentAdminRepository(db), queue, get_vector_store(), ingestion)
     accounts = AccountRepository(db)
     finish_deletions = _throttle(maint.janitor, 15)
-    clean_orphans = _throttle(lambda: maint.clean_orphans(accounts, s.orphan_max_age_hours), 3600)
+
+    def hourly():
+        maint.prune_jobs(s.job_retention_days)
+        maint.clean_orphans(accounts, s.orphan_max_age_hours)
+    clean_up = _throttle(hourly, 3600)
 
     def janitor():
         finish_deletions()
-        clean_orphans()
+        clean_up()
 
     _runner = ThreadJobRunner(
         queue, IngestHandler(ingestion), janitor=janitor,

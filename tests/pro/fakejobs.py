@@ -69,8 +69,10 @@ class FakeServiceDB(FakeDB):
         j.update(locked_until=self.now + p_lease_seconds, progress=max(0, min(100, p_progress)))
         return True
 
-    def _finish_job(self, p_job_id, p_ok, p_error=None, p_retry_after_seconds=None):
-        j = next(j for j in self._jobs() if j["id"] == p_job_id)
+    def _finish_job(self, p_job_id, p_ok, p_worker, p_error=None, p_retry_after_seconds=None):
+        j = next((j for j in self._jobs() if j["id"] == p_job_id), None)
+        if not j or j["locked_by"] != p_worker or j["status"] != "running":
+            return False
         if p_ok:
             j.update(status="completed", progress=100, locked_by=None)
         elif p_retry_after_seconds is not None and j["attempts"] < j["max_attempts"]:
@@ -80,6 +82,10 @@ class FakeServiceDB(FakeDB):
             doc = self._doc(j["document_id"])
             if doc and doc["status"] != "deleting":
                 doc.update(status="failed", error_message=p_error)
+        return True
+
+    def _prune_processing_jobs(self, p_older_than, p_limit=500):
+        return 0  # age-based deletion is covered by the SQL tests
 
     # ---- storage space RPCs (20261126000000_user_space.sql)
     def _user_storage_usage(self, p_user):

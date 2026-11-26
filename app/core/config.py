@@ -44,6 +44,7 @@ class Settings:
     rag_condense: bool = True
     allowed_providers: tuple = ("google", "facebook")  # empty = any provider (local dev only)
     orphan_max_age_hours: int = 24
+    job_retention_days: int = 30
 
     @property
     def issuer(self) -> str:
@@ -91,4 +92,5 @@ def get_settings() -> Settings:
         rag_condense=_env("RAG_CONDENSE_QUESTION", default="true").lower() not in ("0", "false", "no"),
         allowed_providers=_providers(),
         orphan_max_age_hours=int(_env("ORPHAN_MAX_AGE_HOURS", default=Settings.orphan_max_age_hours)),
+        job_retention_days=int(_env("JOB_RETENTION_DAYS", default=Settings.job_retention_days)),
     )

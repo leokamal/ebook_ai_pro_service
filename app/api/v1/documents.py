@@ -6,6 +6,7 @@ service-role call touches the document.
 """
 import logging
 import os
+import threading
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response
@@ -31,11 +32,27 @@ def _limit(name: str, default: int) -> int:
     return int(os.environ.get(name, default))
 
 
-def _check_quota(docs: DocumentRepository, jobs: JobReader, new_document: bool):
+def _check_document_quota(docs: DocumentRepository):
     cap = _limit("MAX_DOCS_PER_USER", 200)
-    if new_document and docs.count(cap + 1) >= cap:
+    if docs.count(cap + 1) >= cap:
         raise AppError("quota_exceeded", "Document limit reached", 429)
-    if jobs.active_count() >= _limit("MAX_ACTIVE_JOBS_PER_USER", 5):
+
+
+def _job_slot_free(jobs: JobReader) -> bool:
+    return jobs.active_count() < _limit("MAX_ACTIVE_JOBS_PER_USER", 5)
+
+
+# Counting active jobs and enqueueing must be one step per user, or parallel requests all pass the cap.
+# A process-local lock is enough: the service runs exactly one worker. Striped, so memory stays bounded.
+_SLOT_LOCKS = [threading.Lock() for _ in range(64)]
+
+
+def _slot_lock(user_id: str) -> threading.Lock:
+    return _SLOT_LOCKS[hash(user_id) % len(_SLOT_LOCKS)]
+
+
+def _require_job_slot(jobs: JobReader):
+    if not _job_slot_free(jobs):
         raise AppError("quota_exceeded", "Too many documents are being processed; try again shortly", 429)
 
 
@@ -44,11 +61,14 @@ def _max_pdf_bytes() -> int:
 
 
 @router.post("", response_model=DocumentOut, status_code=201, responses={**_ERR, 200: {"model": DocumentOut},
-             409: {"description": "Id already used"}, 422: {"description": "File missing/invalid"}})
+             409: {"description": "Id used by someone else or for another file"}, 422: {"description": "File missing/invalid"}})
 def register_document(body: DocumentCreate, response: Response, user: CurrentUserDep, s: SettingsDep, docs: DocsDep,
                       admin: AdminDocsDep, queue: QueueDep, jobs: JobsDep, storage=Depends(get_storage),
                       accounts=Depends(get_account_repo)):
-    """Register a PDF that Flutter already uploaded to `{user_id}/{document_id}/{file_name}`."""
+    """Register a PDF that Flutter already uploaded to `{user_id}/{document_id}/{file_name}`.
+
+    Any number of PDFs may be registered at once. With `auto_process`, those above the active-job cap are stored
+    with status `uploaded`; start them later with `/process`."""
     doc_id = str(body.document_id)
     path = build_file_path(user.id, doc_id, body.file_name)  # derived server-side, validated
     try:
@@ -72,15 +92,19 @@ def register_document(body: DocumentCreate, response: Response, user: CurrentUse
     except NotFound:
         exists = False
     if not exists:
-        _check_quota(docs, jobs, True)
+        _check_document_quota(docs)
         limit = accounts.limits()["max_storage_bytes"]
         # one file may legitimately cross the limit; refuse if the OTHER files already filled the space
         if limit > 0 and accounts.usage(user.id)["bytes"] - size >= limit:
             raise AppError("quota_exceeded", "Your storage space is full", 429)
     doc, created = docs.create(user.id, doc_id, body.title, body.file_name, size, body.language)
+    if not created and doc["file_name"] != body.file_name:  # never silently ignore a second PDF
+        raise Conflict("Document id already used for another file")
     if created and body.auto_process:
-        queue.enqueue(doc_id, user.id)
-        doc = admin.get_owned(doc_id, user.id)
+        with _slot_lock(user.id):
+            if _job_slot_free(jobs):
+                queue.enqueue(doc_id, user.id)
+                doc = admin.get_owned(doc_id, user.id)
     response.status_code = 201 if created else 200
     return doc
 
@@ -120,8 +144,10 @@ def process_document(document_id: str, user: CurrentUserDep, docs: DocsDep, queu
     document_id = _uuid(document_id)
     if docs.get(document_id)["status"] != "uploaded":
         raise Conflict("Only documents in 'uploaded' state can be processed")
-    _check_quota(docs, jobs, False)
-    return {"document_id": document_id, "status": "queued", "job_id": queue.enqueue(document_id, user.id)}
+    with _slot_lock(user.id):
+        _require_job_slot(jobs)
+        job_id = queue.enqueue(document_id, user.id)
+    return {"document_id": document_id, "status": "queued", "job_id": job_id}
 
 
 @router.post("/{document_id}/retry", status_code=202, response_model=JobAccepted,
@@ -130,8 +156,10 @@ def retry_document(document_id: str, user: CurrentUserDep, docs: DocsDep, queue:
     document_id = _uuid(document_id)
     if docs.get(document_id)["status"] != "failed":
         raise Conflict("Only failed documents can be retried")
-    _check_quota(docs, jobs, False)
-    return {"document_id": document_id, "status": "queued", "job_id": queue.enqueue(document_id, user.id)}
+    with _slot_lock(user.id):
+        _require_job_slot(jobs)
+        job_id = queue.enqueue(document_id, user.id)
+    return {"document_id": document_id, "status": "queued", "job_id": job_id}
 
 
 @router.get("/{document_id}/status", response_model=DocumentStatusOut, responses=_ERR)

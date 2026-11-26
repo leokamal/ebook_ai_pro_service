@@ -11,6 +11,7 @@ Every test runs inside a transaction that is rolled back, so the database is lef
 import json
 import os
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -170,14 +171,14 @@ def test_jobs_are_read_only_for_users_and_rpcs_are_service_role_only(db):
     assert denied(db, "select public.enqueue_processing_job(%s,%s,'ingest')", (doc, a))      # one active job only
     assert db.execute("select status from public.documents where id=%s", (doc,)).fetchone()[0] == "queued"
     claimed = db.execute("select id, attempts from public.claim_processing_job('w1', 300)").fetchone()
-    assert str(claimed[0]) == job and claimed[1] == 1
+    assert claimed[0] == job and claimed[1] == 1
     assert db.execute("select count(*) from public.claim_processing_job('w2', 300)").fetchone()[0] == 0  # leased
     as_role(db, "authenticated", a)
     assert db.execute("select count(*) from public.processing_jobs").fetchone()[0] == 1
     assert denied(db, "update public.processing_jobs set status='completed' where id=%s", (job,))
     assert denied(db, "insert into public.processing_jobs (user_id, document_id) values (%s,%s)", (a, doc))
     for fn in ("enqueue_processing_job(%s,%s,'ingest')", "claim_processing_job('w',300)",
-               "finish_job(%s,true,null,null)"):
+               "finish_job(%s,true,'w1',null,null)"):
         params = (doc, a) if fn.startswith("enqueue") else ((job,) if fn.startswith("finish") else ())
         assert denied(db, f"select public.{fn}", params), fn
     as_role(db, "authenticated", b)
@@ -233,3 +234,121 @@ def test_upload_is_blocked_at_the_space_limit_per_user(db):
     as_role(db, "service_role")
     assert db.execute("select bytes, objects from public.user_storage_usage(%s)", (a,)).fetchone() == (1200, 2)
     assert db.execute("select count(*) from public.list_user_objects(%s)", (a,)).fetchone()[0] == 2
+
+
+# ------------------------------------------------------------------ hardening
+def add_job(conn, uid, doc, status="completed", age_days=0):
+    as_role(conn, "postgres")
+    return conn.execute(
+        "insert into public.processing_jobs (user_id, document_id, status, created_at, completed_at) values "
+        "(%s,%s,%s, now() - make_interval(days => %s), now() - make_interval(days => %s)) returning id",
+        (uid, doc, status, age_days, age_days)).fetchone()[0]
+
+
+def test_users_may_delete_only_unregistered_files(db):
+    a = make_user(db)
+    doc = add_doc(db, a)
+    as_role(db, "authenticated", a)
+    ins = "insert into storage.objects (bucket_id, name, owner) values ('user-documents', %s, %s)"
+    registered, loose = f"{a}/{doc}/b.pdf", f"{a}/{uuid.uuid4()}/loose.pdf"
+    db.execute(ins, (registered, a))
+    db.execute(ins, (loose, a))
+    db.execute("select set_config('storage.allow_delete_query', 'true', true)")
+    assert denied(db, "delete from storage.objects where name=%s", (registered,))
+    assert db.execute("delete from storage.objects where name=%s", (loose,)).rowcount == 1
+
+
+def test_only_the_lease_holder_can_finish_a_job(db):
+    a = make_user(db)
+    doc = add_doc(db, a)
+    as_role(db, "service_role")
+    job = db.execute("select public.enqueue_processing_job(%s,%s,'ingest')", (doc, a)).fetchone()[0]
+    db.execute("select * from public.claim_processing_job('w1', 300)")
+    finish = "select public.finish_job(%s, %s, %s, 'boom', null)"
+    assert db.execute(finish, (job, False, "w2")).fetchone()[0] is False
+    assert db.execute("select status from public.documents where id=%s", (doc,)).fetchone()[0] == "processing"
+    assert db.execute(finish, (job, False, "w1")).fetchone()[0] is True
+    assert db.execute("select status from public.documents where id=%s", (doc,)).fetchone()[0] == "failed"
+    assert db.execute(finish, (job, True, "w1")).fetchone()[0] is False          # already finished
+
+
+def test_pruning_keeps_the_latest_job_of_each_document(db):
+    a = make_user(db)
+    d1, d2 = add_doc(db, a), add_doc(db, a)
+    old = add_job(db, a, d1, age_days=90)
+    latest = add_job(db, a, d1, age_days=60)
+    only = add_job(db, a, d2, age_days=90)
+    as_role(db, "authenticated", a)
+    assert denied(db, "select public.prune_processing_jobs(interval '30 days')")
+    as_role(db, "service_role")
+    assert db.execute("select public.prune_processing_jobs(interval '30 days')").fetchone()[0] == 1
+    left = {r[0] for r in db.execute("select id from public.processing_jobs").fetchall()}
+    assert old not in left and {latest, only} <= left
+
+
+@pytest.mark.parametrize("table,column,insert", [
+    ("documents", "max_documents", None),
+    ("conversations", "max_conversations",
+     "insert into public.conversations (user_id, mode) values (%s, 'all_documents')"),
+])
+def test_row_limits_hold_for_direct_inserts(db, table, column, insert):
+    a, b = make_user(db), make_user(db)
+    as_role(db, "postgres")
+    db.execute(f"update public.app_limits set {column} = 1")
+
+    def add(uid):
+        if insert is None:
+            add_doc(db, uid)
+        else:
+            as_role(db, "authenticated", uid)
+            db.execute(insert, (uid,))
+
+    add(a)
+    db.execute("savepoint s")
+    with pytest.raises(psycopg.errors.RaiseException, match="quota_exceeded"):
+        add(a)
+    db.execute("rollback to savepoint s")
+    add(b)                                                                        # per user
+
+
+def test_dot_file_name_is_rejected(db):
+    a = make_user(db)
+    d = str(uuid.uuid4())
+    as_role(db, "authenticated", a)
+    assert denied(db, "insert into public.documents (id,user_id,title,file_name,file_path,file_size) "
+                      "values (%s,%s,'T','.',%s,10)", (d, a, f"{a}/{d}/."))
+
+
+def test_upserting_a_chunk_keeps_the_citation(db):
+    a = make_user(db)
+    doc = add_doc(db, a)
+    as_role(db, "service_role")
+    chunk = str(uuid.uuid4())
+    upsert = ("insert into public.document_chunks (id, document_id, user_id, chunk_index, page_number) "
+              "values (%s,%s,%s,0,%s) on conflict (id) do update set id = excluded.id, "
+              "document_id = excluded.document_id, user_id = excluded.user_id, "
+              "chunk_index = excluded.chunk_index, page_number = excluded.page_number")
+    db.execute(upsert, (chunk, doc, a, 1))
+    conv = db.execute("insert into public.conversations (user_id, mode) values (%s,'all_documents') returning id",
+                      (a,)).fetchone()[0]
+    msg = db.execute("insert into public.messages (conversation_id, role, content) values (%s,'assistant','x') "
+                     "returning id", (conv,)).fetchone()[0]
+    db.execute("insert into public.message_sources (message_id, document_id, chunk_id, page_number) "
+               "values (%s,%s,%s,1)", (msg, doc, chunk))
+    db.execute(upsert, (chunk, doc, a, 2))
+    assert str(db.execute("select chunk_id from public.message_sources").fetchone()[0]) == chunk
+
+
+def test_indexes_exist(db):
+    names = {r[0] for r in db.execute("select indexname from pg_indexes where schemaname='public'").fetchall()}
+    assert {"message_sources_doc_chunk_idx", "processing_jobs_document_idx"} <= names
+
+
+def test_rerunning_the_first_migration_keeps_the_upload_limit(db):
+    a = make_user(db)
+    sql = Path(__file__).parents[3] / "supabase" / "migrations" / "20261125000000_pro_schema.sql"
+    db.execute(sql.read_text(encoding="utf-8"))
+    db.execute("update public.app_limits set max_objects = 0")
+    as_role(db, "authenticated", a)
+    assert denied(db, "insert into storage.objects (bucket_id, name, owner) values ('user-documents', %s, %s)",
+                  (f"{a}/{uuid.uuid4()}/b.pdf", a))

@@ -170,5 +170,5 @@ def test_claim_and_finish_never_revive_a_deleting_document(acct):
     row["status"] = "deleting"
     job = q.claim("w1", 300)
     assert row["status"] == "deleting"
-    q.finish(job["id"], False, "x", None)
+    assert q.finish(job["id"], "w1", False, "x", None)
     assert row["status"] == "deleting"

@@ -36,6 +36,14 @@ class _Query:
         self.op, self.payload = "insert", payload
         return self
 
+    def upsert(self, payload, on_conflict="id"):
+        self.op, self.payload = "upsert", payload
+        return self
+
+    def gte(self, col, val):
+        self.filters.append(lambda r: r.get(col) >= val)
+        return self
+
     def update(self, payload):
         self.op, self.payload = "update", payload
         return self
@@ -75,6 +83,14 @@ class _Query:
 
     def execute(self):
         rows = self.db.tables.setdefault(self.table, [])
+        if self.op == "upsert":  # on id
+            by_id = {r["id"]: r for r in rows}
+            for p in self.payload:
+                if p["id"] in by_id:
+                    by_id[p["id"]].update(p)
+                else:
+                    rows.append({**p, "created_at": self.db.stamp()})
+            return _Result(copy.deepcopy(self.payload))
         if self.op == "insert":
             new = []
             for p in (self.payload if isinstance(self.payload, list) else [self.payload]):

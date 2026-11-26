@@ -25,7 +25,12 @@ class ConversationRepository:
         row = {"user_id": user_id, "mode": mode, "document_id": document_id}
         if title:
             row["title"] = title
-        return self.db.table("conversations").insert(row).execute().data[0]
+        try:
+            return self.db.table("conversations").insert(row).execute().data[0]
+        except Exception as e:
+            if "quota_exceeded" in str(e):  # database row limit
+                raise AppError("quota_exceeded", "Conversation limit reached; delete some conversations", 429) from None
+            raise
 
     def get(self, conversation_id: str) -> dict:
         rows = self.db.table("conversations").select(CONV_COLUMNS).eq("id", conversation_id).limit(1).execute().data

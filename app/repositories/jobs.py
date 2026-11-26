@@ -52,6 +52,12 @@ class JobQueue:
         return bool(self.db.rpc("heartbeat_job", {"p_job_id": job_id, "p_worker": worker_id, "p_progress": progress,
                                                   "p_lease_seconds": lease_seconds}).execute().data)
 
-    def finish(self, job_id: str, ok: bool, error: Optional[str] = None, retry_after_seconds: Optional[int] = None) -> None:
-        self.db.rpc("finish_job", {"p_job_id": job_id, "p_ok": ok, "p_error": error,
-                                   "p_retry_after_seconds": retry_after_seconds}).execute()
+    def finish(self, job_id: str, worker_id: str, ok: bool, error: Optional[str] = None,
+               retry_after_seconds: Optional[int] = None) -> bool:
+        """False: this worker no longer holds the lease (or the job is gone); nothing changed."""
+        return bool(self.db.rpc("finish_job", {"p_job_id": job_id, "p_ok": ok, "p_worker": worker_id, "p_error": error,
+                                               "p_retry_after_seconds": retry_after_seconds}).execute().data)
+
+    def prune(self, older_than_days: int) -> int:
+        data = self.db.rpc("prune_processing_jobs", {"p_older_than": f"{older_than_days} days"}).execute().data
+        return int(data or 0)

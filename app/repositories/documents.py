@@ -1,6 +1,6 @@
 from typing import Optional
 
-from app.core.exceptions import Conflict, NotFound
+from app.core.exceptions import AppError, Conflict, NotFound
 from app.repositories.base import paginate
 
 DOC_COLUMNS = ("id,user_id,title,file_name,file_path,file_type,file_size,page_count,language,status,"
@@ -11,7 +11,6 @@ def build_file_path(user_id: str, document_id: str, file_name: str) -> str:
     """Storage path is always derived server-side: {user_id}/{document_id}/{file_name}."""
     if (not file_name or "/" in file_name or "\\" in file_name or file_name in (".", "..")
             or any(ord(c) < 32 for c in file_name)):
-        from app.core.exceptions import AppError
         raise AppError("validation_error", "Invalid file name", 422)
     return f"{user_id}/{document_id}/{file_name}"
 
@@ -57,6 +56,8 @@ class DocumentRepository:
         try:
             return self.db.table("documents").insert(row).execute().data[0], True
         except Exception as e:  # PK collision with another user's id is invisible via RLS
+            if "quota_exceeded" in str(e):  # database row limit (parallel requests can pass the API check)
+                raise AppError("quota_exceeded", "Document limit reached", 429) from None
             if "23505" in str(e) or "duplicate" in str(e).lower():
                 raise Conflict("Document id already in use") from None
             raise
@@ -118,12 +119,15 @@ class ChunkRepository:
         self.db = service_db
 
     def replace(self, document_id: str, user_id: str, rows: list[dict], batch: int = 500) -> None:
-        self.db.table("document_chunks").delete().eq("document_id", document_id).eq("user_id", user_id).execute()
+        """Upsert, then drop the tail. Never delete-and-reinsert: `on delete set null` would wipe the `chunk_id`
+        of earlier citations. `rows` are indexed 0..n-1 and their ids derive from (document, index)."""
         for i in range(0, len(rows), batch):
-            self.db.table("document_chunks").insert([
+            self.db.table("document_chunks").upsert([
                 {"id": r["id"], "document_id": document_id, "user_id": user_id,
                  "chunk_index": r["chunk_index"], "page_number": r["page_number"]} for r in rows[i:i + batch]
-            ]).execute()
+            ], on_conflict="id").execute()
+        (self.db.table("document_chunks").delete().eq("document_id", document_id).eq("user_id", user_id)
+         .gte("chunk_index", len(rows)).execute())
 
     def count(self, document_id: str, user_id: str) -> int:
         return len(self.db.table("document_chunks").select("id").eq("document_id", document_id)

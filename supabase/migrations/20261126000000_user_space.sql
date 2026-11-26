@@ -4,7 +4,9 @@
 create table if not exists public.app_limits (
   id                boolean primary key default true check (id),          -- exactly one row
   max_storage_bytes bigint  not null default 104857600 check (max_storage_bytes >= 0),  -- 100 MB per user
-  max_objects       integer not null default 220 check (max_objects >= 0)
+  max_objects       integer not null default 220 check (max_objects >= 0),
+  max_documents     integer not null default 200 check (max_documents >= 0),
+  max_conversations integer not null default 1000 check (max_conversations >= 0)
 );
 insert into public.app_limits (id) values (true) on conflict (id) do nothing;
 alter table public.app_limits enable row level security;
@@ -68,53 +70,30 @@ grant execute on function public.can_upload() to authenticated, service_role;
 grant execute on function public.list_user_objects(uuid) to service_role;
 grant execute on function public.list_orphan_objects(interval, integer) to service_role;
 
--- Same folder rule as before, plus the space limit.
+-- Upload only into your own folder, and only while there is space.
 drop policy if exists user_documents_insert on storage.objects;
 create policy user_documents_insert on storage.objects for insert to authenticated
   with check (bucket_id = 'user-documents'
               and (storage.foldername(name))[1] = (select auth.uid())::text
               and public.can_upload());
 
--- A document being deleted must stay `deleting`: redefine the job functions accordingly
--- (same signatures, so the existing service_role-only grants are kept).
-create or replace function public.claim_processing_job(p_worker text, p_lease_seconds integer default 300)
-returns setof public.processing_jobs language plpgsql security definer set search_path = '' as $$
-declare j public.processing_jobs;
+-- Row limits, enforced here because clients can reach PostgREST directly. The advisory lock serializes one
+-- user's inserts so parallel requests cannot pass the count together. Fails closed without an app_limits row.
+create or replace function public.enforce_row_limit() returns trigger
+language plpgsql set search_path = '' as $$
+declare v_max integer; v_count bigint;
 begin
-  loop
-    select * into j from public.processing_jobs
-      where (status = 'queued' and run_after <= now()) or (status = 'running' and locked_until < now())
-      order by run_after, created_at limit 1 for update skip locked;
-    if not found then return; end if;
-    if j.attempts >= j.max_attempts then
-      update public.processing_jobs set status = 'failed', completed_at = now(), locked_by = null,
-        error_message = coalesce(error_message, 'Too many attempts') where id = j.id;
-      update public.documents set status = 'failed', error_message = coalesce(j.error_message, 'Too many attempts')
-        where id = j.document_id and status <> 'deleting';
-      continue;
-    end if;
-    return query update public.processing_jobs
-      set status = 'running', attempts = attempts + 1, locked_by = p_worker, started_at = coalesce(started_at, now()),
-          locked_until = now() + make_interval(secs => p_lease_seconds)
-      where id = j.id returning *;
-    update public.documents set status = 'processing' where id = j.document_id and status <> 'deleting';
-    return;
-  end loop;
+  perform pg_advisory_xact_lock(hashtextextended(tg_table_name || ':' || new.user_id::text, 0));
+  select case tg_table_name when 'documents' then l.max_documents else l.max_conversations end
+    into v_max from public.app_limits l;
+  execute format('select count(*) from public.%I where user_id = $1', tg_table_name) into v_count using new.user_id;
+  if v_max is null or v_count >= v_max then raise exception 'quota_exceeded'; end if;
+  return new;
 end $$;
 
-create or replace function public.finish_job(p_job_id uuid, p_ok boolean, p_error text default null, p_retry_after_seconds integer default null)
-returns void language plpgsql security definer set search_path = '' as $$
-declare j public.processing_jobs;
-begin
-  select * into j from public.processing_jobs where id = p_job_id for update;
-  if not found then return; end if;
-  if p_ok then
-    update public.processing_jobs set status = 'completed', progress = 100, completed_at = now(), locked_by = null where id = p_job_id;
-  elsif p_retry_after_seconds is not null and j.attempts < j.max_attempts then
-    update public.processing_jobs set status = 'queued', locked_by = null, error_message = p_error,
-      run_after = now() + make_interval(secs => p_retry_after_seconds) where id = p_job_id;
-  else
-    update public.processing_jobs set status = 'failed', completed_at = now(), locked_by = null, error_message = p_error where id = p_job_id;
-    update public.documents set status = 'failed', error_message = p_error where id = j.document_id and status <> 'deleting';
-  end if;
-end $$;
+drop trigger if exists documents_row_limit on public.documents;
+create trigger documents_row_limit before insert on public.documents
+  for each row execute function public.enforce_row_limit();
+drop trigger if exists conversations_row_limit on public.conversations;
+create trigger conversations_row_limit before insert on public.conversations
+  for each row execute function public.enforce_row_limit();

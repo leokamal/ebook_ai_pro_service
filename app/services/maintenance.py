@@ -47,6 +47,14 @@ class Maintenance:
             logger.info("orphan cleanup removed %d objects", removed)
         return removed
 
+    def prune_jobs(self, retention_days: int) -> int:
+        """Delete old finished jobs. Never raises: it must not stop the rest of the hourly cleanup."""
+        try:
+            return self.queue.prune(max(retention_days, 1))
+        except Exception:
+            logger.exception("job pruning failed")
+            return 0
+
     def _enqueue_reindex(self, doc_id: str, user_id: str) -> bool:
         try:
             self.queue.enqueue(doc_id, user_id, "reindex")

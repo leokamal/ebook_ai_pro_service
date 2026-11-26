@@ -67,9 +67,9 @@ pytest                                                    # no network, no model
 ```
 
 ### Supabase setup (once per project)
-1. Create a project. Apply `supabase/migrations/*.sql` (`supabase db push`, or paste them in the SQL editor in order). PostgreSQL 15+ is required (`ON DELETE SET NULL (column)`).
+1. Create a project. Apply `supabase/migrations/*.sql` (`supabase db push`, or paste them in the SQL editor in filename order; the second one holds the Storage upload policy, so do not skip it). PostgreSQL 15+ is required (`ON DELETE SET NULL (column)`).
 2. Auth: enable **Google and Facebook**, disable anonymous and e-mail sign-ups (steps in `docs/DEPLOYMENT.md` 3b). Use **asymmetric JWT signing keys** (default on new projects) so the backend can verify via JWKS (`/auth/v1/.well-known/jwks.json`). Legacy HS256 projects: set `SUPABASE_JWT_SECRET` (only accepted for tokens without a `kid`).
-3. Storage: the migration creates the private bucket `user-documents` (50 MB limit, PDF only) with per-user-folder policies. Flutter uploads to `{user_id}/{document_id}/{file_name}` with `upsert: false` (there is deliberately no UPDATE policy: uploaded PDFs are immutable).
+3. Storage: the migration creates the private bucket `user-documents` (50 MB limit, PDF only) with per-user-folder policies. Flutter uploads to `{user_id}/{document_id}/{file_name}` with `upsert: false` (there is deliberately no UPDATE policy, and clients can delete only unregistered files: registered PDFs are immutable). A user can keep many PDFs, within the space and document limits.
 4. Keys, and who may hold them:
 
 | Credential | Where | Purpose |
@@ -86,7 +86,7 @@ pytest                                                    # no network, no model
 | Everything offline (unit, API, two-user isolation, streaming, OpenAPI contract) | `pytest` | nothing (fakes for Supabase, Chroma, embeddings, Gemini) |
 | SQL: RLS, column grants, storage policies, job RPC privileges | `SUPABASE_TEST_DB_URL=... pytest tests/pro/integration -m integration` | a real Postgres with the Supabase schema (`supabase start`), `pip install "psycopg[binary]"` |
 
-Not exercised by the automated suite, so check on a staging project before launch: the SQL integration suite, real ChromaDB persistence (one test is skipped unless `chromadb` is installed), the real multilingual embedding model (Arabic/French retrieval quality, `RAG_MIN_SCORE` tuning), real Gemini calls, and the Storage REST helpers in `supabase_storage.py`.
+Not exercised by the automated suite, so check on a staging project before launch: the SQL integration suite on a real Supabase stack, real ChromaDB persistence (one test is skipped unless `chromadb` is installed), the real multilingual embedding model (Arabic/French retrieval quality, `RAG_MIN_SCORE` tuning), real Gemini calls, and the Storage REST helpers in `supabase_storage.py`.
 
 ## Deployment
 

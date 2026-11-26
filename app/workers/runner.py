@@ -70,22 +70,26 @@ class ThreadJobRunner:
         def heartbeat(pct: int) -> bool:
             return self.queue.heartbeat(jid, self.worker_id, pct, self.lease)
 
+        def finish(ok: bool, error: Optional[str] = None, retry_after: Optional[int] = None):
+            if not self.queue.finish(jid, self.worker_id, ok, error, retry_after):
+                logger.warning("job %s: not finished by us (lease taken over, or the job was removed)", jid)
+
         try:
             self.handler.handle(job, heartbeat)
-            self.queue.finish(jid, True)
+            finish(True)
         except LeaseLost:
             logger.warning("job %s: lease lost, abandoning", jid)
         except IngestError as e:  # permanent: user-safe message, no retry
             logger.info("job %s failed permanently: %s", jid, e.code)
-            self.queue.finish(jid, False, e.message, None)
+            finish(False, e.message)
         except NotFound:  # document deleted while queued: nothing to retry
-            self.queue.finish(jid, False, "The document no longer exists", None)
+            finish(False, "The document no longer exists")
         except ServiceUnavailable as e:  # e.g. index needs reindex: retrying will not fix it
             logger.error("job %s: %s", jid, e.message)
-            self.queue.finish(jid, False, "The search index is unavailable", None)
+            finish(False, "The search index is unavailable")
         except Exception:  # transient (network, 5xx, ...): details only in logs
             logger.exception("job %s failed, will retry if attempts remain", jid)
-            self.queue.finish(jid, False, "Temporary processing error", backoff_seconds(job.get("attempts", 1)))
+            finish(False, "Temporary processing error", backoff_seconds(job.get("attempts", 1)))
         return True
 
     def _loop(self):

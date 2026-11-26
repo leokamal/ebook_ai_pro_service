@@ -14,7 +14,7 @@ create table if not exists public.documents (
   user_id       uuid not null references auth.users(id) on delete cascade,
   title         text not null check (char_length(title) between 1 and 300),
   file_name     text not null check (char_length(file_name) between 1 and 255
-                                      and file_name !~ '[/\\]' and file_name !~ '[[:cntrl:]]' and file_name <> '..'),
+                                      and file_name !~ '[/\\]' and file_name !~ '[[:cntrl:]]' and file_name not in ('.', '..')),
   file_path     text not null,
   file_type     text not null default 'application/pdf' check (file_type = 'application/pdf'),
   file_size     bigint not null check (file_size > 0 and file_size <= 52428800),
@@ -99,7 +99,8 @@ create table if not exists public.message_sources (
     on delete set null (chunk_id)
 );
 create index if not exists message_sources_message_idx on public.message_sources (message_id);
-create index if not exists message_sources_document_idx on public.message_sources (document_id);
+-- serves lookups by document and the `on delete set null` coming from document_chunks
+create index if not exists message_sources_doc_chunk_idx on public.message_sources (document_id, chunk_id);
 
 -- ------------------------------------------------------------------ processing_jobs (transactional outbox)
 create table if not exists public.processing_jobs (
@@ -123,6 +124,7 @@ create table if not exists public.processing_jobs (
 -- duplicate prevention: at most one active job per document
 create unique index if not exists processing_jobs_active_uidx on public.processing_jobs (document_id)
   where status in ('queued','running');
+create index if not exists processing_jobs_document_idx on public.processing_jobs (document_id, created_at desc);
 create index if not exists processing_jobs_claim_idx on public.processing_jobs (status, run_after);
 create index if not exists processing_jobs_user_idx on public.processing_jobs (user_id, created_at desc);
 
@@ -194,18 +196,21 @@ on conflict (id) do update set public = false, file_size_limit = 52428800,
 
 -- Path: {user_id}/{document_id}/{filename}; first folder must equal the caller's uuid.
 do $$ declare op text; begin
-  foreach op in array array['select','insert','update','delete'] loop
+  foreach op in array array['select','update','delete'] loop
     execute format('drop policy if exists %I on storage.objects', 'user_documents_' || op);
   end loop;
 end $$;
 create policy user_documents_select on storage.objects for select to authenticated
   using (bucket_id = 'user-documents' and (storage.foldername(name))[1] = (select auth.uid())::text);
-create policy user_documents_insert on storage.objects for insert to authenticated
-  with check (bucket_id = 'user-documents' and (storage.foldername(name))[1] = (select auth.uid())::text);
+-- The INSERT policy (folder rule + space limit) lives only in 20261126000000_user_space.sql, so rerunning this
+-- file can never leave an upload policy without the limit.
 -- No UPDATE policy on purpose: objects are immutable once uploaded (clients upload with upsert=false),
 -- so an indexed PDF cannot be swapped under the Chroma index.
+-- Clients may delete only UNREGISTERED files (otherwise delete + upload would swap an indexed PDF).
+-- Registered files are removed by the backend (service role) through the API.
 create policy user_documents_delete on storage.objects for delete to authenticated
-  using (bucket_id = 'user-documents' and (storage.foldername(name))[1] = (select auth.uid())::text);
+  using (bucket_id = 'user-documents' and (storage.foldername(name))[1] = (select auth.uid())::text
+         and not exists (select 1 from public.documents d where d.file_path = objects.name));
 
 -- ------------------------------------------------------------------ job RPCs (service_role only)
 create or replace function public.enqueue_processing_job(p_document_id uuid, p_user_id uuid, p_kind text default 'ingest')
@@ -233,14 +238,14 @@ begin
       update public.processing_jobs set status = 'failed', completed_at = now(), locked_by = null,
         error_message = coalesce(error_message, 'Too many attempts') where id = j.id;
       update public.documents set status = 'failed', error_message = coalesce(j.error_message, 'Too many attempts')
-        where id = j.document_id;
+        where id = j.document_id and status <> 'deleting';
       continue;
     end if;
     return query update public.processing_jobs
       set status = 'running', attempts = attempts + 1, locked_by = p_worker, started_at = coalesce(started_at, now()),
           locked_until = now() + make_interval(secs => p_lease_seconds)
       where id = j.id returning *;
-    update public.documents set status = 'processing' where id = j.document_id;
+    update public.documents set status = 'processing' where id = j.document_id and status <> 'deleting';
     return;
   end loop;
 end $$;
@@ -252,13 +257,16 @@ returns boolean language sql security definer set search_path = '' as $$
     where id = p_job_id and locked_by = p_worker and status = 'running' returning 1)
   select exists (select 1 from u) $$;
 
+-- Only the worker holding the lease may finish a job (false = lease lost or job gone: nothing changed).
 -- p_retry_after_seconds: null = permanent failure; >0 = requeue with backoff (if attempts remain)
-create or replace function public.finish_job(p_job_id uuid, p_ok boolean, p_error text default null, p_retry_after_seconds integer default null)
-returns void language plpgsql security definer set search_path = '' as $$
+create or replace function public.finish_job(p_job_id uuid, p_ok boolean, p_worker text, p_error text default null,
+                                             p_retry_after_seconds integer default null)
+returns boolean language plpgsql security definer set search_path = '' as $$
 declare j public.processing_jobs;
 begin
-  select * into j from public.processing_jobs where id = p_job_id for update;
-  if not found then return; end if;
+  select * into j from public.processing_jobs
+    where id = p_job_id and locked_by = p_worker and status = 'running' for update;
+  if not found then return false; end if;
   if p_ok then
     update public.processing_jobs set status = 'completed', progress = 100, completed_at = now(), locked_by = null where id = p_job_id;
   elsif p_retry_after_seconds is not null and j.attempts < j.max_attempts then
@@ -266,15 +274,34 @@ begin
       run_after = now() + make_interval(secs => p_retry_after_seconds) where id = p_job_id;
   else
     update public.processing_jobs set status = 'failed', completed_at = now(), locked_by = null, error_message = p_error where id = p_job_id;
-    update public.documents set status = 'failed', error_message = p_error where id = j.document_id;
+    update public.documents set status = 'failed', error_message = p_error where id = j.document_id and status <> 'deleting';
   end if;
+  return true;
 end $$;
+
+-- Remove old finished jobs, but never the latest job of a document (the status endpoint reads it).
+create or replace function public.prune_processing_jobs(p_older_than interval, p_limit integer default 500)
+returns integer language sql set search_path = '' as $$
+  with victims as (
+    select j.id from public.processing_jobs j
+    where j.status in ('completed','failed') and j.completed_at < now() - greatest(p_older_than, interval '1 day')
+      and exists (select 1 from public.processing_jobs n
+                  where n.document_id = j.document_id and (n.created_at, n.id) > (j.created_at, j.id))
+    order by j.completed_at
+    limit least(p_limit, 5000)
+  ), gone as (
+    delete from public.processing_jobs p using victims v where p.id = v.id returning 1
+  )
+  select count(*)::integer from gone
+$$;
 
 revoke all on function public.enqueue_processing_job(uuid, uuid, text) from public, anon, authenticated;
 revoke all on function public.claim_processing_job(text, integer) from public, anon, authenticated;
 revoke all on function public.heartbeat_job(uuid, text, integer, integer) from public, anon, authenticated;
-revoke all on function public.finish_job(uuid, boolean, text, integer) from public, anon, authenticated;
+revoke all on function public.finish_job(uuid, boolean, text, text, integer) from public, anon, authenticated;
+revoke all on function public.prune_processing_jobs(interval, integer) from public, anon, authenticated;
 grant execute on function public.enqueue_processing_job(uuid, uuid, text) to service_role;
 grant execute on function public.claim_processing_job(text, integer) to service_role;
 grant execute on function public.heartbeat_job(uuid, text, integer, integer) to service_role;
-grant execute on function public.finish_job(uuid, boolean, text, integer) to service_role;
+grant execute on function public.finish_job(uuid, boolean, text, text, integer) to service_role;
+grant execute on function public.prune_processing_jobs(interval, integer) to service_role;

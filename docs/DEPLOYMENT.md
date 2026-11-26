@@ -28,7 +28,7 @@ Free vs paid components: Supabase free tier (quota-limited: DB size, 1 GB storag
 
 ## 3. Configure and deploy
 
-1. Create the Supabase project and apply the migrations ([README](../README.md#supabase-setup-once-per-project)).
+1. Create the Supabase project and apply the migrations ([README](../README.md#supabase-setup-once-per-project)), in filename order. `20261126000000_user_space.sql` is required: it holds the only Storage upload policy.
 2. Environment (see `.env.example`; **placeholders only are committed**). Required: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `GEMINI_API_KEY`, `ADMIN_TOKEN`. Recommended: `HF_TOKEN` (higher Hugging Face rate limits), `HF_HOME` on the disk. Defaults: bucket `user-documents`, collection `ebook_ai_pro_documents`, model `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (384 dimensions).
 3. Docker: `docker build -t ebook-ai . && docker run --env-file .env -p 8000:8000 -v ebook_ai_data:/data ebook-ai`. Render: connect the repo, use `render.yaml` (Docker runtime, disk at `/data`), fill the secret env vars.
 4. Smoke test:
@@ -62,9 +62,11 @@ Startup/shutdown: the lifespan hook starts the job runner (no model loaded, Chro
 
 Text to publish as the data deletion instructions: "Open the app, go to Account, choose Delete account and confirm. Your account, uploaded PDFs, search index and chat history are permanently deleted." (Add a contact address for people who can no longer sign in.)
 
-**Space limits** live in the database: `update public.app_limits set max_storage_bytes = 104857600, max_objects = 220;` (takes effect immediately). The limit is checked before each upload, so one file can overshoot it, and parallel uploads or signed upload URLs created while under the limit can exceed it further; the API refuses to register such files and the cleanup removes them after `ORPHAN_MAX_AGE_HOURS`. It is a soft cap on raw storage and a hard-enough cap on indexed content. Supabase's free tier has about 1 GB of storage in total: plan the per-user limit accordingly.
+**Space limits** live in the database: `update public.app_limits set max_storage_bytes = 104857600, max_objects = 220, max_documents = 200, max_conversations = 1000;` (takes effect immediately). The last two are row limits enforced by database triggers, so direct PostgREST inserts cannot pass them; raising `MAX_DOCS_PER_USER` above `max_documents` has no effect. The limit is checked before each upload, so one file can overshoot it, and parallel uploads or signed upload URLs created while under the limit can exceed it further; the API refuses to register such files and the cleanup removes them after `ORPHAN_MAX_AGE_HOURS`. It is a soft cap on raw storage and a hard-enough cap on indexed content. Supabase's free tier has about 1 GB of storage in total: plan the per-user limit accordingly.
 
 **After account deletion** an already issued access token stays valid until it expires (about an hour). API writes then fail (the user no longer exists), but a direct storage upload could still succeed; the hourly orphan cleanup removes it after `ORPHAN_MAX_AGE_HOURS` (24).
+
+**Check once on the real database** that the usage query behind `can_upload()` (it runs on every upload) uses an index: `set enable_seqscan = off; explain select count(*) from storage.objects where bucket_id = 'user-documents' and name like '<user-uuid>/%';`. The `name` prefix should appear in an `Index Cond`. If it only appears in a `Filter`, plan a follow-up before the bucket grows large.
 
 ## 4. Recovery: ChromaDB storage lost
 
@@ -87,7 +89,7 @@ Backups: use the host's disk snapshots if offered (verify what your provider gua
 
 ## 6. Limits and knobs
 
-`MAX_PDF_BYTES` (50 MB, also the bucket limit), `MAX_PDF_PAGES` (1000), `MAX_DOCS_PER_USER` (200), `MAX_ACTIVE_JOBS_PER_USER` (5), `CHAT_RATE_PER_MINUTE` (20), `CHAT_MAX_CONCURRENT_STREAMS` (2 in-flight streams per user), `LLM_STREAM_DEADLINE_SECONDS` (120), `SEARCH_RATE_PER_MINUTE` (60), `EMBED_BATCH` (32), `RAG_CANDIDATES` (20), `RAG_CONTEXT_CHUNKS` (6), `RAG_MAX_PER_DOC` (3), `RAG_MIN_SCORE` (unset), `HISTORY_MESSAGES` (6), `LLM_TIMEOUT_SECONDS` (60), `LLM_MAX_OUTPUT_TOKENS` (1024), `LLM_MAX_RETRIES` (2), `WORKER_POLL_SECONDS` (5), `JOB_LEASE_SECONDS` (300). Rate limits are per process (fine for the single-worker deployment).
+`MAX_PDF_BYTES` (50 MB, also the bucket limit), `MAX_PDF_PAGES` (1000), `MAX_DOCS_PER_USER` (200), `MAX_ACTIVE_JOBS_PER_USER` (5), `JOB_RETENTION_DAYS` (30; finished jobs older than this are removed hourly, the latest job of each document is kept), `ORPHAN_MAX_AGE_HOURS` (24), `CHAT_RATE_PER_MINUTE` (20), `CHAT_MAX_CONCURRENT_STREAMS` (2 in-flight streams per user), `LLM_STREAM_DEADLINE_SECONDS` (120), `SEARCH_RATE_PER_MINUTE` (60), `EMBED_BATCH` (32), `RAG_CANDIDATES` (20), `RAG_CONTEXT_CHUNKS` (6), `RAG_MAX_PER_DOC` (3), `RAG_MIN_SCORE` (unset), `HISTORY_MESSAGES` (6), `LLM_TIMEOUT_SECONDS` (60), `LLM_MAX_OUTPUT_TOKENS` (1024), `LLM_MAX_RETRIES` (2), `WORKER_POLL_SECONDS` (5), `JOB_LEASE_SECONDS` (300). Rate limits are per process (fine for the single-worker deployment).
 
 Memory: the process holds torch + the embedding model (~0.5 GB, loaded on first use) + Chroma's index; ingestion streams the PDF to disk, processes one page at a time and embeds in batches of 32, and only one encode runs at a time. These are design bounds, not measurements: load-test on the target instance.
 
@@ -100,6 +102,7 @@ Memory: the process holds torch + the embedding model (~0.5 GB, loaded on first 
 | All `/api/v1` calls `401` | token expired/wrong project, JWKS unreachable, `SUPABASE_URL` mismatch (issuer check) | check the app uses the same project; check logs for `JWKS fetch failed` |
 | `/api/v1/health` 503 `unconfigured` | missing `SUPABASE_URL` / anon / service-role key | set env |
 | `/api/v1/health` 503 `needs_reindex` | embedding model or dimension changed | `POST /api/v1/admin/reindex` |
+| Document stays `uploaded` after registering | the user already had `MAX_ACTIVE_JOBS_PER_USER` documents queued or processing | the app calls `POST .../process` later |
 | Document stuck `queued` | worker not running (`WORKER_ENABLED=false`, health `worker: stopped`) or unconfigured | check health + logs |
 | Document stuck `processing` | worker died; lease expires after `JOB_LEASE_SECONDS`, then another claim resumes | wait, or restart |
 | Document `failed` | see `error_message` (scanned PDF without text, corrupt, encrypted, too many pages, size mismatch) | user fixes the file, or `POST .../retry` for transient errors |

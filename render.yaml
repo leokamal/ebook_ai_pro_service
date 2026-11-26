@@ -43,3 +43,5 @@ services:
         value: google,facebook
       - key: WORKER_ENABLED
         value: "true"
+      - key: JOB_RETENTION_DAYS
+        value: "30"

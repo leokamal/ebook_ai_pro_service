@@ -15,7 +15,7 @@ The app signs in with Supabase directly; this API has no login endpoints and hol
 Every user has a private folder `user-documents/{user_id}/` with a storage limit (default 100 MB, 220 files). When it is full, **the Storage upload itself is refused** (row-level security error): show the usage from `/me`.
 - `GET /api/v1/me` -> `{"id","email","name","avatar_url","providers":["google"],"usage":{"documents","storage_bytes","storage_limit_bytes","objects","object_limit"}}` (`email`, `name`, `avatar_url` may be `null`).
 - `DELETE /api/v1/me` with body `{"confirm":"DELETE"}` -> `204`. Deletes the account, files, vectors, documents and chat history; irreversible. Then call `supabase.auth.signOut()` locally. `422` without the exact confirmation; `503 account_deletion_incomplete` means nothing is lost for good: retry.
-- `POST /documents` also returns `429 quota_exceeded` when your other files already fill the space.
+- `POST /documents` also returns `429 quota_exceeded` when your other files already fill the space, or at the document limit (200).
 - An uploaded file that is never registered with `POST /documents` is removed after 24 hours.
 
 ## Overview (`/api/v1`)
@@ -26,18 +26,23 @@ Pagination: `?limit=1..100&cursor=<opaque>` -> `{"items": [...], "next_cursor": 
 
 ### Documents (Phase 4)
 Flutter flow: upload the PDF to Supabase Storage at `user-documents/{user_id}/{document_id}/{file_name}` (generate `document_id` as a UUID, **upload with `upsert: false`**), then register it.
-- `POST /api/v1/documents` `{"document_id": "<uuid>", "title": "...", "file_name": "book.pdf", "language": "fr"?, "auto_process": true}` -> `201` document (`200` if already registered by you; `409` if the id belongs to someone else; `422 file_not_found|invalid_file`; `413` too large). Unknown fields (`user_id`, `file_path`) are rejected (422).
+
+**Several PDFs:** give each file its own `document_id`, upload it and register it; one after another or all at once. At most 5 documents per user are queued or processing at a time. With `auto_process: true`, further ones are still accepted (`201`) but come back with `status: "uploaded"`: **they do not start on their own**, call `/process` when earlier ones finish. Always read `status` after registering. The total space limit still applies.
+
+A registered file cannot be deleted or replaced directly in Storage. To replace a PDF, delete the document through this API and upload it again under a new id.
+
+- `POST /api/v1/documents` `{"document_id": "<uuid>", "title": "...", "file_name": "book.pdf", "language": "fr"?, "auto_process": true}` -> `201` document (`200` if already registered by you; `409` if the id belongs to someone else, or you already used it for another `file_name`; `422 file_not_found|invalid_file`; `413` too large). Unknown fields (`user_id`, `file_path`) are rejected (422).
 - `GET /api/v1/documents?limit=&cursor=&status=` -> `{"items": [...], "next_cursor": ...}`
 - `GET /api/v1/documents/{id}` -> document. Other users' documents return `404`.
 - `GET /api/v1/documents/{id}/status` -> `{"status","index_state","progress","attempts","error_message","page_count","chunk_count"}`. `status`: `uploaded|queued|processing|completed|failed|deleting`. Poll it.
-- `POST /api/v1/documents/{id}/process` (only from `uploaded`) and `/retry` (only from `failed`) -> `202 {"document_id","status":"queued","job_id"}`; wrong state -> `409`.
+- `POST /api/v1/documents/{id}/process` (only from `uploaded`) and `/retry` (only from `failed`) -> `202 {"document_id","status":"queued","job_id"}`; wrong state -> `409`; 5 documents already queued or processing -> `429 quota_exceeded`.
 - `DELETE /api/v1/documents/{id}` -> `202` (asynchronous: vectors, file and row are removed).
 Failures set `status=failed` with a user-safe `error_message` (e.g. scanned PDF without text, corrupt or password-protected PDF, too many pages).
 Admin (`X-Admin-Token`): `POST /api/v1/admin/reindex` (after changing `EMBEDDING_MODEL`), `POST /api/v1/admin/reconcile` (rebuild documents whose vectors were lost).
 
 ### Conversations and chat (Phase 5)
 Auth required on all routes. Resources of other users return `404`.
-- `POST /api/v1/conversations` `{"mode": "single_document"|"all_documents", "document_id": "<uuid>"?, "title"?}` -> `201`. `single_document` requires `document_id` (yours); `all_documents` forbids it. The mode and document are fixed for the life of the conversation.
+- `POST /api/v1/conversations` `{"mode": "single_document"|"all_documents", "document_id": "<uuid>"?, "title"?}` -> `201`. `single_document` requires `document_id` (yours); `all_documents` forbids it. The mode and document are fixed for the life of the conversation. At 1000 conversations -> `429 quota_exceeded`.
 - `GET /api/v1/conversations?limit=&cursor=` (most recently updated first), `GET|PATCH|DELETE /api/v1/conversations/{id}` (`PATCH` accepts only `title`; `DELETE` -> `204`).
 - `GET /api/v1/conversations/{id}/messages?limit=&cursor=` -> newest first; assistant messages carry `sources`.
 - `POST /api/v1/chat` `{"conversation_id": "<uuid>", "message": "1-4000 chars", "summarize": false}` ->

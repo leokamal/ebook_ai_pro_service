@@ -20,6 +20,7 @@ All eight phases are implemented. Operational documentation: [README](../../READ
 | 6 Multi-RAG | done | `app/api/v1/search.py`, `ContextBuilder(group=True)`, `RerankingService` |
 | 7 API integration | done | `/chat/stream` (SSE), request ids, error envelope, OpenAPI contract tests |
 | 8 Security + deployment | done (see gaps) | `tests/pro/test_isolation.py`, `tests/pro/integration/`, `Dockerfile`, `render.yaml`, README, DEPLOYMENT |
+| Hardening + multi-PDF upload | done (SQL not tried on real Supabase) | [schema_hardening_and_multi_upload.md](schema_hardening_and_multi_upload.md) |
 
 ### Deviations from this spec (and why)
 1. **Persistence order.** The user message is no longer stored before generation. A turn (user + assistant messages + sources) is stored only after a complete, grounded answer: a failed generation leaves nothing behind, retries cannot duplicate turns, history never has consecutive user turns. Consequently the SSE `meta` event carries only `conversation_id`; `done` carries `message_id`, `answer`, `refused`, `usage`.
@@ -34,7 +35,7 @@ All eight phases are implemented. Operational documentation: [README](../../READ
 9. `reindex_all` flags documents stale **before** resetting the collection and refuses while jobs are running (found in review).
 
 ### Known gaps / not verified (be honest before launch)
-- SQL integration tests (RLS, column grants, storage policies, RPC privileges) were written but **never executed**; run them against a local Supabase.
+- SQL integration tests (RLS, column grants, storage policies, RPC privileges) have **never run on a real Supabase stack** (they pass on plain Postgres with a stand-in `auth`/`storage` schema); run them against a local Supabase.
 - Real ChromaDB persistence/reopen behaviour, the real multilingual embedding model (Arabic/French quality), real Gemini calls and the Supabase Storage REST helpers were not exercised (the suite uses fakes; one real-Chroma test skips when `chromadb` is absent).
 - `RAG_MIN_SCORE`, per-document caps, chunk size (1000/150) and the condense step are untuned defaults.
 - Performance/memory figures in DEPLOYMENT are design bounds, not measurements.
