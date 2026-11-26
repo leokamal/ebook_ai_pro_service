@@ -1,3 +1,4 @@
+import builtins
 from typing import Optional
 
 from app.core.exceptions import AppError, Conflict, NotFound
@@ -34,7 +35,7 @@ class DocumentRepository:
         q, page = paginate(q, limit, cursor)
         return page(q.execute().data)
 
-    def list_searchable(self, max_documents: int = 500) -> list[dict]:
+    def list_searchable(self, max_documents: int = 500) -> builtins.list[dict]:  # `list` is the method above
         """The caller's completed + indexed documents (RLS-scoped), deterministic order."""
         return (self.db.table("documents").select("id,title,language").eq("status", "completed")
                 .eq("index_state", "indexed").order("created_at", desc=True).order("id", desc=True)

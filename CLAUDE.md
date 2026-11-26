@@ -7,6 +7,8 @@ FastAPI service. Per-user PDF library, Personal RAG / Multi-RAG chat with citati
 - Local embedding model (optional): `pip install -r requirements-huggingface.txt`, `EMBEDDING_PROVIDER=huggingface`
 - Tests (offline, no network/models): `pytest` (on this Windows box: `.venv/Scripts/python -m pytest -q`). SQL tests: `SUPABASE_TEST_DB_URL=... pytest tests/pro/integration -m integration`.
 
+- Production is Python 3.11 (`.python-version`, `Dockerfile`); this Windows venv is 3.14, which hides 3.11 import errors (e.g. annotations). Check on 3.11 before deploying: `docker build -t ebook-ai .`, then run the tests inside the image.
+
 ## Environment variables (never hardcode; see `.env.example`)
 `SUPABASE_URL`, `SUPABASE_ANON_KEY` (forwards the user's JWT to PostgREST), `SUPABASE_SERVICE_ROLE_KEY` (server only, bypasses RLS), `SUPABASE_JWT_JWKS_URL` (default derived from the URL), `SUPABASE_JWT_SECRET` (optional legacy HS256), `SUPABASE_DB_URL` (ops/tests only), `SUPABASE_STORAGE_BUCKET` (`user-documents`), `GEMINI_API_KEY`, `GEMINI_MODEL`, `EMBEDDING_PROVIDER` (`gemini` | `huggingface`), `GEMINI_EMBEDDING_MODEL`, `GEMINI_EMBEDDING_DIMENSION`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSION` (the last two: Hugging Face only), `CHROMA_PERSIST_DIRECTORY`, `CHROMA_COLLECTION_NAME`, `ADMIN_TOKEN` (admin routes; 503 if unset), `HF_TOKEN`/`HF_HOME` (model cache), `CORS_ORIGINS`, `AUTH_ALLOWED_PROVIDERS`, `ORPHAN_MAX_AGE_HOURS`, `ENVIRONMENT`, plus limits/knobs listed in `docs/DEPLOYMENT.md` section 6.
 

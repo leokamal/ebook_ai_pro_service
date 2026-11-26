@@ -1,3 +1,4 @@
+import builtins
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -52,7 +53,7 @@ class ConversationRepository:
         self.get(conversation_id)
         self.db.table("conversations").delete().eq("id", conversation_id).execute()
 
-    def recent_messages(self, conversation_id: str, n: int) -> list[dict]:
+    def recent_messages(self, conversation_id: str, n: int) -> builtins.list[dict]:  # `list` is the method above
         """Last n messages, oldest first (for the LLM history). Ownership is enforced by RLS."""
         rows = (self.db.table("messages").select("id,role,content,created_at").eq("conversation_id", conversation_id)
                 .order("created_at", desc=True).order("id", desc=True).limit(n).execute().data)
