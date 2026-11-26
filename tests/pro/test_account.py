@@ -11,7 +11,7 @@ from app.core.exceptions import install_error_handlers
 from app.core.security import AuthUser
 from app.repositories.account import AccountRepository
 from app.repositories.jobs import JobQueue
-from app.services.account import AccountService
+from app.services.account import AccountService, process_deletion_requests
 from app.services.maintenance import Maintenance
 from app.workers.runner import IngestHandler, ThreadJobRunner
 from tests.pro.conftest_helpers import A, B, PDF, World
@@ -188,3 +188,14 @@ def test_me_returns_my_profile_and_falls_back_to_the_token(acct):
             body["country"]) == (key, "p@x.test", "Ani", "Ana Maria", "https://i/a.png", "MA")
     acct.w.tables["profiles"][0]["avatar_hidden"] = True
     assert acct.c.get("/api/v1/me").json()["avatar_url"] is None
+
+
+def test_requested_deletion_runs_and_a_failure_keeps_the_request(acct):
+    acct.w.tables["account_deletion_requests"] = [{"user_id": A}]
+    repo = AccountRepository(acct.w.db)
+    acct.fail.add("files")
+    assert process_deletion_requests(repo, acct.service()) == 0
+    assert acct.deleted_users == [] and repo.list_deletion_requests() == [A]
+    acct.fail.clear()
+    assert process_deletion_requests(repo, acct.service()) == 1
+    assert acct.deleted_users == [A]

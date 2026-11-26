@@ -122,3 +122,8 @@ Memory: the process holds torch + the embedding model (~0.5 GB, loaded on first 
 ## 9. Upgrade path (not built)
 
 Celery/Redis consumer instead of the thread (`JobRunner`/`JobHandler` are the seams), Chroma as a separate server or another vector store behind `VectorStore`, a cross-encoder reranker behind `RerankingService`, OCR for scanned PDFs (EasyOCR is already a dependency), a snapshot backup of the Chroma directory to Storage, sharing documents between users, background execution of `reindex`/`reconcile` as queued jobs (they currently loop inside the admin request).
+
+## Migration for direct app access
+Apply `supabase/migrations/20261128000000_client_rpcs.sql` after the earlier ones, then redeploy the service so its worker handles `account_deletion_requests`. Keep `WORKER_ENABLED` on.
+
+Then apply `supabase/migrations/20261129000000_document_language.sql` (lets owners set a document's language). No redeploy needed.

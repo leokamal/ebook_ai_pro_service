@@ -59,3 +59,16 @@ class AccountService:
                 self.storage.remove_object(self.bucket, name)
                 done.add(name)
         raise RuntimeError("too many objects to remove in one request")
+
+
+def process_deletion_requests(repo, service: AccountService) -> int:
+    """Deletes the accounts that asked for it from the app. A failure keeps the request for the next pass
+    (deleting the auth user cascades to the request row)."""
+    done = 0
+    for user_id in repo.list_deletion_requests():
+        try:
+            service.delete(user_id)
+            done += 1
+        except AppError as e:
+            logger.error("requested account deletion will be retried: %s", e.code)
+    return done

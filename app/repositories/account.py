@@ -44,3 +44,8 @@ class AccountRepository:
 
     def path_registered(self, path: str) -> bool:
         return bool(self.db.table(DOCUMENTS).select("id").eq("file_path", path).limit(1).execute().data)
+
+    def list_deletion_requests(self, limit: int = 20) -> list:
+        """Cross-user, maintenance only."""
+        rows = self.db.table("account_deletion_requests").select("user_id").limit(limit).execute().data
+        return [r["user_id"] for r in rows or []]
