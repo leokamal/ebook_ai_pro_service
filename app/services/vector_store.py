@@ -55,6 +55,7 @@ class SearchHit:
 class VectorStore(Protocol):
     def upsert_chunks(self, chunks: Sequence[ChunkRecord]) -> None: ...
     def delete_document(self, document_id: str, user_id: str) -> None: ...
+    def delete_user(self, user_id: str) -> None: ...
     def delete_stale(self, document_id: str, user_id: str, keep_run: str) -> None: ...
     def count(self, document_id: str, user_id: str) -> int: ...
     def query(self, embedding: list, user_id: str, document_ids: Sequence[str], top_k: int) -> list[SearchHit]: ...
@@ -170,6 +171,16 @@ class ChromaVectorStore:
     def delete_document(self, document_id: str, user_id: str) -> None:
         with self._lock:
             self._ready().delete(where=self._doc_where(document_id, user_id))
+
+    def delete_user(self, user_id: str) -> None:
+        """Account deletion. Allowed in `needs_reindex` too: deleting can never mix embedding models."""
+        if not user_id:
+            raise ValueError("user_id is required")
+        with self._lock:
+            self._open()
+            if self._state == "error" or self._col is None:
+                raise ServiceUnavailable("Vector index unavailable")
+            self._col.delete(where={"user_id": user_id})
 
     def delete_stale(self, document_id: str, user_id: str, keep_run: str) -> None:
         """After a successful (re)index: drop chunks of this document written by older runs."""

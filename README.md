@@ -2,6 +2,8 @@
 
 FastAPI backend for **E-Book AI Pro**: every user has a private PDF library and can chat with one document (**Personal RAG**) or with the whole library (**Personal Multi-RAG**). Conversations and chat history are persisted, answers are grounded and carry document/page citations, and Arabic, French and English are supported.
 
+Users sign in with **Google or Facebook** (Supabase Auth) and each gets a private, size-limited space for their PDFs, with in-app account deletion ([setup](docs/DEPLOYMENT.md#3b-sign-in-providers-and-user-space-one-time-setup-dashboard-work)).
+
 Stack: Python 3.11, FastAPI, Supabase (Auth, Postgres + RLS, Storage), ChromaDB (the only vector store; persistent, in-process, never exposed), PyMuPDF, a multilingual sentence-transformers model, Gemini. No pgvector, no paid vector database. The previous "E-Book AI" single-library service has been removed; this repository is Pro only (the old code is in git history, commit `first init`).
 
 Docs: [docs/API.md](docs/API.md) (contract for the Flutter app) · [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) (setup, hosting, recovery, runbook) · [docs/features/ebook_ai_pro_backend.md](docs/features/ebook_ai_pro_backend.md) (design + implementation status) · [CLAUDE.md](CLAUDE.md) (engineering notes and invariants). Interactive API docs at `/docs` when running.
@@ -41,7 +43,7 @@ security.py                admin token guard (X-Admin-Token)
 supabase_storage.py        Storage REST helpers (stream download, inspect, remove)
 app/
   core/         config, JWT verification, dependencies, error model + request ids, rate/concurrency limits
-  api/v1/       documents, conversations, chat (+stream), search, health, admin
+  api/v1/       me (account), documents, conversations, chat (+stream), search, health, admin
   schemas/      Pydantic request/response models
   repositories/ PostgREST access (user-scoped = RLS; service-role methods always filter by user_id)
   services/     embedding, vector_store (Chroma), retrieval, ingestion, maintenance, rag_parts, llm, orchestrator, pdf_extraction
@@ -66,7 +68,7 @@ pytest                                                    # no network, no model
 
 ### Supabase setup (once per project)
 1. Create a project. Apply `supabase/migrations/*.sql` (`supabase db push`, or paste them in the SQL editor in order). PostgreSQL 15+ is required (`ON DELETE SET NULL (column)`).
-2. Auth: enable the providers the Flutter app uses. Use **asymmetric JWT signing keys** (default on new projects) so the backend can verify via JWKS (`/auth/v1/.well-known/jwks.json`). Legacy HS256 projects: set `SUPABASE_JWT_SECRET` (only accepted for tokens without a `kid`).
+2. Auth: enable **Google and Facebook**, disable anonymous and e-mail sign-ups (steps in `docs/DEPLOYMENT.md` 3b). Use **asymmetric JWT signing keys** (default on new projects) so the backend can verify via JWKS (`/auth/v1/.well-known/jwks.json`). Legacy HS256 projects: set `SUPABASE_JWT_SECRET` (only accepted for tokens without a `kid`).
 3. Storage: the migration creates the private bucket `user-documents` (50 MB limit, PDF only) with per-user-folder policies. Flutter uploads to `{user_id}/{document_id}/{file_name}` with `upsert: false` (there is deliberately no UPDATE policy: uploaded PDFs are immutable).
 4. Keys, and who may hold them:
 

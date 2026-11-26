@@ -42,6 +42,8 @@ class Settings:
     rag_min_score: Optional[float] = None
     rag_max_per_doc: int = 3
     rag_condense: bool = True
+    allowed_providers: tuple = ("google", "facebook")  # empty = any provider (local dev only)
+    orphan_max_age_hours: int = 24
 
     @property
     def issuer(self) -> str:
@@ -50,6 +52,13 @@ class Settings:
     @property
     def configured(self) -> bool:
         return bool(self.supabase_url and self.anon_key)
+
+
+def _providers() -> tuple:
+    raw = os.environ.get("AUTH_ALLOWED_PROVIDERS")  # unset -> default; set-but-empty -> any provider
+    if raw is None:
+        return Settings.allowed_providers
+    return tuple(p.strip().lower() for p in raw.split(",") if p.strip())
 
 
 def get_settings() -> Settings:
@@ -80,4 +89,6 @@ def get_settings() -> Settings:
         rag_min_score=float(_env("RAG_MIN_SCORE")) if _env("RAG_MIN_SCORE") else None,
         rag_max_per_doc=int(_env("RAG_MAX_PER_DOC", default=Settings.rag_max_per_doc)),
         rag_condense=_env("RAG_CONDENSE_QUESTION", default="true").lower() not in ("0", "false", "no"),
+        allowed_providers=_providers(),
+        orphan_max_age_hours=int(_env("ORPHAN_MAX_AGE_HOURS", default=Settings.orphan_max_age_hours)),
     )

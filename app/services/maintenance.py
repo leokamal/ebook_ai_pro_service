@@ -31,6 +31,22 @@ class Maintenance:
                     pass
         return done
 
+    def clean_orphans(self, repo, max_age_hours: int, limit: int = 50) -> int:
+        """Remove uploads that no document row refers to (never registered, or left by a failed delete)."""
+        removed = 0
+        storage, bucket = self.ingestion.storage, self.ingestion.cfg.bucket
+        for name in repo.list_orphan_objects(max(max_age_hours, 1), limit):
+            try:
+                if repo.path_registered(name):  # registered since it was listed: keep it
+                    continue
+                storage.remove_object(bucket, name)
+                removed += 1
+            except Exception:
+                logger.exception("orphan cleanup failed for one object")
+        if removed:
+            logger.info("orphan cleanup removed %d objects", removed)
+        return removed
+
     def _enqueue_reindex(self, doc_id: str, user_id: str) -> bool:
         try:
             self.queue.enqueue(doc_id, user_id, "reindex")

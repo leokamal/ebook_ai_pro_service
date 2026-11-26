@@ -4,6 +4,20 @@ Interactive reference: `/docs` (Swagger UI) and `/openapi.json`. Base URL: your 
 Liveness probe (no auth, no details): `GET /health` -> `{"status": "ok"}`. Everything else is under `/api/v1`.
 The previous single-library endpoints (`/query`, `/query-database/`, `/upload`, `/generate-database/`, `/load-database/`) no longer exist.
 
+## Sign-in (Google and Facebook through Supabase Auth)
+The app signs in with Supabase directly; this API has no login endpoints and holds no Google or Facebook secrets.
+- `supabase.auth.signInWithOAuth(OAuthProvider.google | OAuthProvider.facebook, redirectTo: '<app-scheme>://login-callback')` with PKCE; register the deep link on Android and iOS. Only the Supabase URL and publishable key ship in the app.
+- Send `session.accessToken` as `Authorization: Bearer`. Let the SDK refresh it; on `401` refresh once, then sign out.
+- Anonymous sessions get `401`. A session from any other provider (e.g. e-mail) gets `403 provider_not_allowed` on every route.
+- The same verified e-mail on Google and Facebook is one account (same `user_id`, same space). A Facebook account without an e-mail is a separate account.
+
+### Your space
+Every user has a private folder `user-documents/{user_id}/` with a storage limit (default 100 MB, 220 files). When it is full, **the Storage upload itself is refused** (row-level security error): show the usage from `/me`.
+- `GET /api/v1/me` -> `{"id","email","name","avatar_url","providers":["google"],"usage":{"documents","storage_bytes","storage_limit_bytes","objects","object_limit"}}` (`email`, `name`, `avatar_url` may be `null`).
+- `DELETE /api/v1/me` with body `{"confirm":"DELETE"}` -> `204`. Deletes the account, files, vectors, documents and chat history; irreversible. Then call `supabase.auth.signOut()` locally. `422` without the exact confirmation; `503 account_deletion_incomplete` means nothing is lost for good: retry.
+- `POST /documents` also returns `429 quota_exceeded` when your other files already fill the space.
+- An uploaded file that is never registered with `POST /documents` is removed after 24 hours.
+
 ## Overview (`/api/v1`)
 Auth: `Authorization: Bearer <Supabase access token>` (verified server-side; `user_id` is never accepted from the client).
 Errors on `/api/v1` only: `{"error": {"code": "unauthorized", "message": "...", "request_id": "..."}}`.

@@ -160,5 +160,18 @@ def get_orchestrator(user: AuthUser = Depends(get_current_user), db=Depends(get_
         MessageWriter(svc), s)
 
 
+def get_account_repo(db=Depends(get_service_db)):
+    from app.repositories.account import AccountRepository
+    return AccountRepository(db)
+
+
+def get_account_service(db=Depends(get_service_db), storage=Depends(get_storage), store=Depends(get_vector_store)):
+    from app.repositories.account import AccountRepository
+    from app.services.account import AccountService, delete_auth_user
+    s = get_settings()
+    return AccountService(AccountRepository(db), store, storage, s.storage_bucket,
+                          lambda uid: delete_auth_user(s.supabase_url, s.service_role_key, uid))
+
+
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 CurrentUserDep = Annotated[AuthUser, Depends(get_current_user)]

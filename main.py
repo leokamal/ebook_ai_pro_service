@@ -40,7 +40,8 @@ app = FastAPI(
     description=("Per-user PDF library with Personal RAG / Multi-RAG chat, page-level citations and semantic search "
                  "(Arabic, French, English). Authenticate every call with the Supabase access token "
                  "(`Authorization: Bearer`). See docs/API.md."),
-    openapi_tags=[{"name": "documents", "description": "Register, process and manage your PDFs"},
+    openapi_tags=[{"name": "account", "description": "Profile, space used, account deletion"},
+                  {"name": "documents", "description": "Register, process and manage your PDFs"},
                   {"name": "conversations", "description": "Chat sessions and their history"},
                   {"name": "chat", "description": "Grounded Q&A with citations (JSON or SSE stream)"},
                   {"name": "search", "description": "Semantic search without an LLM"},

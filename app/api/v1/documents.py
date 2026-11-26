@@ -10,7 +10,7 @@ from typing import Annotated, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response
 
-from app.core.dependencies import (CurrentUserDep, SettingsDep, build_ingestion, get_admin_docs, get_documents_repo,
+from app.core.dependencies import (CurrentUserDep, SettingsDep, build_ingestion, get_account_repo, get_admin_docs, get_documents_repo,
                                    get_job_queue, get_job_reader, get_storage)
 from app.core.exceptions import AppError, Conflict, NotFound, ServiceUnavailable
 from app.repositories.documents import (DocumentAdminRepository, DocumentRepository, build_file_path)
@@ -46,7 +46,8 @@ def _max_pdf_bytes() -> int:
 @router.post("", response_model=DocumentOut, status_code=201, responses={**_ERR, 200: {"model": DocumentOut},
              409: {"description": "Id already used"}, 422: {"description": "File missing/invalid"}})
 def register_document(body: DocumentCreate, response: Response, user: CurrentUserDep, s: SettingsDep, docs: DocsDep,
-                      admin: AdminDocsDep, queue: QueueDep, jobs: JobsDep, storage=Depends(get_storage)):
+                      admin: AdminDocsDep, queue: QueueDep, jobs: JobsDep, storage=Depends(get_storage),
+                      accounts=Depends(get_account_repo)):
     """Register a PDF that Flutter already uploaded to `{user_id}/{document_id}/{file_name}`."""
     doc_id = str(body.document_id)
     path = build_file_path(user.id, doc_id, body.file_name)  # derived server-side, validated
@@ -72,6 +73,10 @@ def register_document(body: DocumentCreate, response: Response, user: CurrentUse
         exists = False
     if not exists:
         _check_quota(docs, jobs, True)
+        limit = accounts.limits()["max_storage_bytes"]
+        # one file may legitimately cross the limit; refuse if the OTHER files already filled the space
+        if limit > 0 and accounts.usage(user.id)["bytes"] - size >= limit:
+            raise AppError("quota_exceeded", "Your storage space is full", 429)
     doc, created = docs.create(user.id, doc_id, body.title, body.file_name, size, body.language)
     if created and body.auto_process:
         queue.enqueue(doc_id, user.id)

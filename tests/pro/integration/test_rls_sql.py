@@ -211,3 +211,25 @@ def test_storage_policies_confine_users_to_their_own_folder(db):
     row = db.execute("select public, file_size_limit, allowed_mime_types from storage.buckets "
                      "where id='user-documents'").fetchone()
     assert row[0] is False and row[1] == 52428800 and list(row[2]) == ["application/pdf"]
+
+
+# ------------------------------------------------------------------ user space (20261126000000_user_space.sql)
+def test_upload_is_blocked_at_the_space_limit_per_user(db):
+    a, b = make_user(db), make_user(db)
+    ins = ("insert into storage.objects (bucket_id, name, owner, metadata) "
+           "values ('user-documents', %s, %s, '{\"size\": 600}')")
+    as_role(db, "postgres")
+    db.execute("update public.app_limits set max_storage_bytes = 1000, max_objects = 10")
+    as_role(db, "authenticated", a)
+    db.execute(ins, (f"{a}/{uuid.uuid4()}/1.pdf", a))
+    db.execute(ins, (f"{a}/{uuid.uuid4()}/2.pdf", a))              # 600 < 1000: allowed (may overshoot)
+    assert denied(db, ins, (f"{a}/{uuid.uuid4()}/3.pdf", a))       # 1200 >= 1000
+    as_role(db, "authenticated", b)
+    db.execute(ins, (f"{b}/{uuid.uuid4()}/1.pdf", b))              # another user is unaffected
+    assert denied(db, "select public.user_storage_usage(%s)", (a,))
+    assert denied(db, "select public.list_user_objects(%s)", (a,))
+    assert denied(db, "select public.list_orphan_objects(interval '1 hour', 5)")
+    assert denied(db, "update public.app_limits set max_objects = 999999")
+    as_role(db, "service_role")
+    assert db.execute("select bytes, objects from public.user_storage_usage(%s)", (a,)).fetchone() == (1200, 2)
+    assert db.execute("select count(*) from public.list_user_objects(%s)", (a,)).fetchone()[0] == 2

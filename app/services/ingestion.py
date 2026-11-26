@@ -56,6 +56,26 @@ class IngestionService:
         if doc["status"] == "deleting":
             return
         path = safe_storage_path(doc, user_id)
+        try:
+            self._index(job, doc, path, heartbeat)
+        except BaseException:  # incl. LeaseLost: when an account is deleted the job row vanishes mid-run
+            self._discard_if_gone(doc_id, user_id)
+            raise
+
+    def _discard_if_gone(self, doc_id: str, user_id: str) -> None:
+        """Never leave vectors behind for a document that was deleted while we were writing them."""
+        try:
+            try:
+                if self.docs.get_owned(doc_id, user_id)["status"] != "deleting":
+                    return
+            except NotFound:
+                pass
+            self.store.delete_document(doc_id, user_id)
+        except Exception:
+            logger.exception("could not discard vectors of document %s", doc_id)
+
+    def _index(self, job: dict, doc: dict, path: str, heartbeat: Callable[[int], bool]) -> None:
+        user_id, doc_id, run = job["user_id"], job["document_id"], job["id"]
 
         with tempfile.TemporaryDirectory(prefix="ingest_") as tmp:  # removed on every exit path
             local = os.path.join(tmp, "document.pdf")  # never derived from the user's file name

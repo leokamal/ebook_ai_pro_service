@@ -34,6 +34,7 @@ def start_worker() -> Optional[object]:
         return None
     from app.core.dependencies import build_ingestion, get_service_db, get_vector_store
     from app.repositories.documents import DocumentAdminRepository
+    from app.repositories.account import AccountRepository
     from app.repositories.jobs import JobQueue
     from app.services.maintenance import Maintenance
     from app.workers.runner import IngestHandler, ThreadJobRunner
@@ -42,8 +43,16 @@ def start_worker() -> Optional[object]:
     ingestion = build_ingestion(s)
     queue = JobQueue(db)
     maint = Maintenance(DocumentAdminRepository(db), queue, get_vector_store(), ingestion)
+    accounts = AccountRepository(db)
+    finish_deletions = _throttle(maint.janitor, 15)
+    clean_orphans = _throttle(lambda: maint.clean_orphans(accounts, s.orphan_max_age_hours), 3600)
+
+    def janitor():
+        finish_deletions()
+        clean_orphans()
+
     _runner = ThreadJobRunner(
-        queue, IngestHandler(ingestion), janitor=_throttle(maint.janitor, 15),
+        queue, IngestHandler(ingestion), janitor=janitor,
         on_start=lambda: logger.info("startup reconcile: %s", maint.reconcile()),
         poll_seconds=float(os.environ.get("WORKER_POLL_SECONDS", 5)),
         lease_seconds=int(os.environ.get("JOB_LEASE_SECONDS", 300)))

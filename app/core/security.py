@@ -24,6 +24,10 @@ LEEWAY = 30
 class AuthUser:
     id: str
     access_token: str = ""
+    email: Optional[str] = None
+    providers: tuple = ()
+    name: Optional[str] = None        # from user_metadata: user-editable, DISPLAY ONLY
+    avatar_url: Optional[str] = None  # idem
 
 
 class JWKSCache:
@@ -66,6 +70,26 @@ def _jwks(settings) -> JWKSCache:
     return _cache
 
 
+def _text(value, limit: int = 500) -> Optional[str]:
+    return value[:limit] if isinstance(value, str) and value else None
+
+
+def _user_from_claims(claims: dict, token: str, settings) -> AuthUser:
+    """Runs only after the signature and standard claims were verified."""
+    if claims.get("is_anonymous"):  # anonymous sign-ins also carry role=authenticated
+        raise Unauthorized()
+    app_meta = claims.get("app_metadata") if isinstance(claims.get("app_metadata"), dict) else {}
+    listed = app_meta.get("providers") if isinstance(app_meta.get("providers"), list) else []
+    providers = tuple(dict.fromkeys(p for p in [app_meta.get("provider"), *listed] if isinstance(p, str) and p))
+    # app_metadata is server-controlled; user_metadata is NOT and is never used for decisions
+    if settings.allowed_providers and not set(providers) & set(settings.allowed_providers):
+        raise AppError("provider_not_allowed", "Sign in with a supported provider", 403)
+    meta = claims.get("user_metadata") if isinstance(claims.get("user_metadata"), dict) else {}
+    return AuthUser(id=str(uuid.UUID(str(claims["sub"]))), access_token=token, email=_text(claims.get("email")),
+                    providers=providers, name=_text(meta.get("full_name") or meta.get("name"), 200),
+                    avatar_url=_text(meta.get("avatar_url") or meta.get("picture"), 1000))
+
+
 def verify_token(token: str, settings=None, jwks: Optional[JWKSCache] = None) -> AuthUser:
     import jwt  # lazy
     settings = settings or get_settings()
@@ -87,7 +111,7 @@ def verify_token(token: str, settings=None, jwks: Optional[JWKSCache] = None) ->
                             leeway=LEEWAY, options={"require": ["exp", "sub", "iss", "aud"]})
         if claims.get("role") != "authenticated":  # rejects the anon key (itself a JWT)
             raise Unauthorized()
-        return AuthUser(id=str(uuid.UUID(str(claims["sub"]))), access_token=token)
+        return _user_from_claims(claims, token, settings)
     except AppError:
         raise
     except Exception:  # invalid/expired token, bad sub, JWKS outage, malformed header

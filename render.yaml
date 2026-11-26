@@ -39,5 +39,7 @@ services:
         value: /data/chroma_pro
       - key: HF_HOME
         value: /data/hf
+      - key: AUTH_ALLOWED_PROVIDERS
+        value: google,facebook
       - key: WORKER_ENABLED
         value: "true"

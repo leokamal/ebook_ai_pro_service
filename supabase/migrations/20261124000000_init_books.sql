@@ -31,7 +31,7 @@ insert into public.books (id, title, file_name, url, image_url, lang) values
    'flutter-succinctly.pdf',
    'books/flutter-succinctly.pdf',
    'images/flutter-succinctly.png',
-   'en'),
+   'fr'),
   (2, 'apprenez a creer votre site web avec html5 et css3',
    '13666-apprenez-a-creer-votre-site-web-avec-html5-et-css3.pdf',
    'books/13666-apprenez-a-creer-votre-site-web-avec-html5-et-css3.pdf',

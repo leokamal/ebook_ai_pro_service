@@ -50,6 +50,22 @@ Startup/shutdown: the lifespan hook starts the job runner (no model loaded, Chro
 
 **Changing the model**: set the two variables, redeploy. The store detects the mismatch and enters `needs_reindex` (`/api/v1/health` returns 503, search/chat return `503 index_unavailable`, nothing is written). Then run `POST /api/v1/admin/reindex` (header `X-Admin-Token`) while no job is running: documents are flagged `stale` first, the collection is recreated for the new model, and rebuild jobs are queued. Documents become searchable again one by one as they finish. Quality of any model on your real Arabic/French content must be checked by hand; tune `RAG_MIN_SCORE` afterwards.
 
+## 3b. Sign-in providers and user space (one-time setup, dashboard work)
+
+1. **Supabase → Authentication → Providers**: enable **Google** and **Facebook**; **disable** anonymous sign-ins and e-mail/password signups.
+2. **Google Cloud**: configure the OAuth consent screen (scopes `openid email profile`), create a *Web* OAuth client with authorised redirect URI `https://<project-ref>.supabase.co/auth/v1/callback`, and paste the client id and secret into the Supabase Google provider.
+3. **Meta for Developers**: create an app with the Facebook Login product, add the same callback URL as a valid OAuth redirect URI, request `email` and `public_profile`, provide a privacy policy URL and a **data deletion instructions URL**, switch the app to **Live**, and paste the app id and secret into Supabase.
+4. **Supabase → Authentication → URL configuration**: add `<app-scheme>://login-callback` (and any web origin) to the redirect allow list. Keep asymmetric JWT signing keys.
+5. Apply `supabase/migrations/20261126000000_user_space.sql`.
+6. Provider secrets live only in the Supabase dashboard, never in this repository or on the API host. `AUTH_ALLOWED_PROVIDERS` (default `google,facebook`) makes the API refuse other providers; set it empty only for local development.
+7. **iOS**: Apple's App Store guidelines generally require an equivalent privacy-preserving login (usually Sign in with Apple) when Google or Facebook login is offered. If you ship on iOS, enable the Apple provider and add `apple` to `AUTH_ALLOWED_PROVIDERS`.
+
+Text to publish as the data deletion instructions: "Open the app, go to Account, choose Delete account and confirm. Your account, uploaded PDFs, search index and chat history are permanently deleted." (Add a contact address for people who can no longer sign in.)
+
+**Space limits** live in the database: `update public.app_limits set max_storage_bytes = 104857600, max_objects = 220;` (takes effect immediately). The limit is checked before each upload, so one file can overshoot it, and parallel uploads or signed upload URLs created while under the limit can exceed it further; the API refuses to register such files and the cleanup removes them after `ORPHAN_MAX_AGE_HOURS`. It is a soft cap on raw storage and a hard-enough cap on indexed content. Supabase's free tier has about 1 GB of storage in total: plan the per-user limit accordingly.
+
+**After account deletion** an already issued access token stays valid until it expires (about an hour). API writes then fail (the user no longer exists), but a direct storage upload could still succeed; the hourly orphan cleanup removes it after `ORPHAN_MAX_AGE_HOURS` (24).
+
 ## 4. Recovery: ChromaDB storage lost
 
 Postgres and Storage are the source of truth; Chroma is derived data.
@@ -79,6 +95,8 @@ Memory: the process holds torch + the embedding model (~0.5 GB, loaded on first 
 
 | Symptom | Likely cause | Action |
 |---|---|---|
+| All calls `403 provider_not_allowed` | the user signed in with a provider not in `AUTH_ALLOWED_PROVIDERS` | enable it in the list or sign in with Google/Facebook |
+| Uploads refused by Storage | the user's space is full (or the migration's policy sees no `app_limits` row) | check `GET /api/v1/me`; adjust `public.app_limits` |
 | All `/api/v1` calls `401` | token expired/wrong project, JWKS unreachable, `SUPABASE_URL` mismatch (issuer check) | check the app uses the same project; check logs for `JWKS fetch failed` |
 | `/api/v1/health` 503 `unconfigured` | missing `SUPABASE_URL` / anon / service-role key | set env |
 | `/api/v1/health` 503 `needs_reindex` | embedding model or dimension changed | `POST /api/v1/admin/reindex` |

@@ -184,3 +184,13 @@ def test_quotas(api, monkeypatch):
     assert api.register(d1).status_code == 200                     # existing document: not a new one
     assert api.c.post(f"/api/v1/documents/{d1}/process").status_code == 202
     assert api.c.post(f"/api/v1/documents/{d2}/process").status_code == 429   # one active job already
+
+
+def test_registration_is_refused_when_other_files_already_fill_the_space(api):
+    api.w.tables["app_limits"] = [{"max_storage_bytes": 2 * len(PDF), "max_objects": 50}]
+    d1, d2 = api.upload(A), api.upload(A)
+    assert api.register(d1, auto_process=False).status_code == 201        # the file that reaches the limit is fine
+    api.register(d2, auto_process=False)
+    d3 = api.upload(A)                                                    # e.g. slipped in through parallel uploads
+    r = api.register(d3, auto_process=False)
+    assert r.status_code == 429 and r.json()["error"]["code"] == "quota_exceeded"

@@ -17,6 +17,7 @@ class FakeServiceDB(FakeDB):
         super().__init__(tables, user_id=None)
         self.now = 0.0
         self._seq = itertools.count(1)
+        self.storage = None  # a FakeStorage, for the storage-listing RPCs
 
     def _jobs(self):
         return self.tables.setdefault("processing_jobs", [])
@@ -51,11 +52,13 @@ class FakeServiceDB(FakeDB):
             doc = self._doc(j["document_id"])
             if j["attempts"] >= j["max_attempts"]:
                 j.update(status="failed", locked_by=None, error_message=j["error_message"] or "Too many attempts")
-                (doc or {}).update(status="failed", error_message=j["error_message"])
+                if doc and doc["status"] != "deleting":
+                    doc.update(status="failed", error_message=j["error_message"])
                 continue
             j.update(status="running", attempts=j["attempts"] + 1, locked_by=p_worker,
                      locked_until=self.now + p_lease_seconds)
-            (doc or {})["status"] = "processing"
+            if doc and doc["status"] != "deleting":
+                doc["status"] = "processing"
             return [dict(j)]
         return []
 
@@ -74,4 +77,20 @@ class FakeServiceDB(FakeDB):
             j.update(status="queued", locked_by=None, error_message=p_error, run_after=self.now + p_retry_after_seconds)
         else:
             j.update(status="failed", locked_by=None, error_message=p_error)
-            (self._doc(j["document_id"]) or {}).update(status="failed", error_message=p_error)
+            doc = self._doc(j["document_id"])
+            if doc and doc["status"] != "deleting":
+                doc.update(status="failed", error_message=p_error)
+
+    # ---- storage space RPCs (20261126000000_user_space.sql)
+    def _user_storage_usage(self, p_user):
+        mine = [v for k, v in self.storage.files.items() if k.startswith(p_user + "/")]
+        return [{"bytes": sum(len(v) for v in mine), "objects": len(mine)}]
+
+    def _list_user_objects(self, p_user):
+        return sorted(k for k in self.storage.files if k.startswith(p_user + "/"))
+
+    def _list_orphan_objects(self, p_older_than, p_limit=50):
+        hours = max(int(p_older_than.split()[0]), 1)
+        registered = {d["file_path"] for d in self.tables.get("documents", [])}
+        return [k for k in sorted(self.storage.files)
+                if self.storage.ages.get(k, 0) >= hours and k not in registered][:p_limit]

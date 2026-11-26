@@ -210,7 +210,7 @@ def spec():
     return TestClient(main.app).get("/openapi.json").json()
 
 
-REQUIRED = [("post", "/api/v1/documents"), ("get", "/api/v1/documents"), ("get", "/api/v1/documents/{document_id}"),
+REQUIRED = [("get", "/api/v1/me"), ("delete", "/api/v1/me"), ("post", "/api/v1/documents"), ("get", "/api/v1/documents"), ("get", "/api/v1/documents/{document_id}"),
             ("delete", "/api/v1/documents/{document_id}"), ("post", "/api/v1/documents/{document_id}/process"),
             ("get", "/api/v1/documents/{document_id}/status"), ("post", "/api/v1/documents/{document_id}/retry"),
             ("post", "/api/v1/conversations"), ("get", "/api/v1/conversations"),
@@ -241,7 +241,7 @@ def test_openapi_security_errors_and_streaming_are_documented(spec):
 
 def test_no_request_schema_accepts_a_client_supplied_identity(spec):
     schemas = spec["components"]["schemas"]
-    for name in ("DocumentCreate", "ConversationCreate", "ConversationUpdate", "ChatRequest", "SearchRequest"):
+    for name in ("DocumentCreate", "ConversationCreate", "ConversationUpdate", "ChatRequest", "SearchRequest", "AccountDeleteRequest"):
         props = schemas[name]["properties"]
         assert "user_id" not in props and "file_path" not in props, name
         assert schemas[name].get("additionalProperties") is False, name

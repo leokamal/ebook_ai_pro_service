@@ -33,6 +33,7 @@ class FakeModel:
 class FakeStorage:
     def __init__(self):
         self.files, self.removed, self.fail_download = {}, [], False
+        self.ages = {}  # path -> age in hours
 
     def put(self, user, doc, name, data=PDF):
         self.files[f"{user}/{doc}/{name}"] = data
@@ -92,6 +93,7 @@ class World:
         self.tables = {}
         self.db = FakeServiceDB(self.tables)
         self.storage = FakeStorage()
+        self.db.storage = self.storage
         self.client = FakeChromaClient()
         self.store = ChromaVectorStore("p", "col", MODEL, DIM, batch_size=2, client_factory=lambda _p: self.client)
         self.model = model or FakeModel()
