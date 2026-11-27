@@ -34,6 +34,18 @@ def service_db():
     return _make({"apikey": s.service_role_key, "Authorization": f"Bearer {s.service_role_key}"})
 
 
+def fetch_all(make_query, page: int = 500) -> list:
+    """Every row of a query: PostgREST caps one response (max rows), whatever `limit` asks for.
+    `make_query` builds a fresh, ordered query each time."""
+    out, offset = [], 0
+    while True:
+        rows = make_query().range(offset, offset + page - 1).execute().data
+        out.extend(rows)
+        if len(rows) < page:
+            return out
+        offset += page
+
+
 # ---- keyset pagination on (created_at desc, id desc); cursor is opaque to clients
 def encode_cursor(row: dict, key: str = "created_at") -> str:
     return base64.urlsafe_b64encode(f"{row[key]}|{row['id']}".encode()).decode()

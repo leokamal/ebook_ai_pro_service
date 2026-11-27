@@ -56,6 +56,10 @@ class _Query:
         self.filters.append(lambda r: str(r.get(col)) == str(val))
         return self
 
+    def neq(self, col, val):
+        self.filters.append(lambda r: str(r.get(col)) != str(val))
+        return self
+
     def in_(self, col, vals):
         self.filters.append(lambda r: r.get(col) in vals)
         return self
@@ -97,6 +101,10 @@ class _Query:
                 row = {**self.DEFAULTS.get(self.table, {}), **p}
                 row["id"] = p.get("id") or str(uuid.uuid4())
                 row.setdefault("created_at", self.db.stamp())
+                if self.table == "documents" and not row.get("content_id"):  # the `documents_content` trigger
+                    if any(r.get("content_id") == row["id"] for r in rows):
+                        raise Exception("duplicate document id 23505")
+                    row.update(content_id=row["id"], content_owner_id=row.get("user_id"))
                 new.append(row)
             if self.table == "documents" and any(r["id"] == n["id"] for n in new for r in rows):
                 raise Exception("duplicate key value violates unique constraint 23505")

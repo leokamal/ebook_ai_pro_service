@@ -9,7 +9,7 @@ def _match(meta, where):
     v = meta.get(k)
     if isinstance(cond, dict):
         ((op, arg),) = cond.items()
-        return {"$in": lambda: v in arg, "$ne": lambda: v != arg, "$eq": lambda: v == arg}[op]()
+        return {"$in": lambda: v in arg, "$ne": lambda: v != arg, "$nin": lambda: v not in arg, "$eq": lambda: v == arg}[op]()
     return v == cond
 
 

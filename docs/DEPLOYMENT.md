@@ -150,12 +150,16 @@ Memory: the process holds Chroma's index (plus, with the local provider, torch a
 
 ## 9. Upgrade path (not built)
 
-Celery/Redis consumer instead of the thread (`JobRunner`/`JobHandler` are the seams), Chroma as a separate server or another vector store behind `VectorStore`, a cross-encoder reranker behind `RerankingService`, a snapshot backup of the Chroma directory to Storage, sharing documents between users, background execution of `reindex`/`reconcile` as queued jobs (they currently loop inside the admin request).
+Celery/Redis consumer instead of the thread (`JobRunner`/`JobHandler` are the seams), Chroma as a separate server or another vector store behind `VectorStore`, a cross-encoder reranker behind `RerankingService`, a snapshot backup of the Chroma directory to Storage, background execution of `reindex`/`reconcile` as queued jobs (they currently loop inside the admin request).
 
 ## Migration for direct app access
 Apply `supabase/migrations/20261128000000_client_rpcs.sql` after the earlier ones, then redeploy the service so its worker handles `account_deletion_requests`. Keep `WORKER_ENABLED` on.
 
 Then apply `supabase/migrations/20261129000000_document_language.sql` (lets owners set a document's language). No redeploy needed.
+
+## Migration 20261201000000_document_sharing.sql
+
+Apply it **before** deploying the service: the new code reads `documents.content_id` / `content_owner_id`. Then deploy, then release the app. No reindex is needed. Do not roll the service back to an older version once anyone has accepted a shared document: older code deletes vectors and files without checking other holders.
 
 ## Migration 20261130000000_document_error_code.sql
 

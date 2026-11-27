@@ -69,7 +69,7 @@ pytest                                                    # no network, no model
 Embeddings come from the Gemini API by default. To run the model locally instead, `pip install -r requirements-huggingface.txt` and set `EMBEDDING_PROVIDER=huggingface` ([details](docs/DEPLOYMENT.md#embedding-providers)).
 
 ### Supabase setup (once per project)
-1. Create a project. Apply `supabase/migrations/*.sql` (`supabase db push`, or paste them in the SQL editor in filename order; do not skip any: the second holds the Storage upload policy, the third creates `profiles`). PostgreSQL 15+ is required (`ON DELETE SET NULL (column)`).
+1. Create a project. Apply `supabase/migrations/*.sql` (`supabase db push`, or paste them in the SQL editor in filename order; do not skip any: the second holds the Storage upload policy, the third creates `profiles`, `20261201000000_document_sharing.sql` is required by the current code). PostgreSQL 15+ is required (`ON DELETE SET NULL (column)`).
 2. Auth: enable **Google and Facebook**, disable anonymous and e-mail sign-ups (steps in `docs/DEPLOYMENT.md` 3b). Use **asymmetric JWT signing keys** (default on new projects) so the backend can verify via JWKS (`/auth/v1/.well-known/jwks.json`). Legacy HS256 projects: set `SUPABASE_JWT_SECRET` (only accepted for tokens without a `kid`).
 3. Storage: the migration creates the private bucket `user-documents` (50 MB limit, PDF only) with per-user-folder policies. Flutter uploads to `{user_id}/{document_id}/{file_name}` with `upsert: false` (there is deliberately no UPDATE policy, and clients can delete only unregistered files: registered PDFs are immutable). A user can keep many PDFs, within the space and document limits.
 4. Keys, and who may hold them:

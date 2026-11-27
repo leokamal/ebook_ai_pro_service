@@ -21,6 +21,7 @@ All eight phases are implemented. Operational documentation: [README](../../READ
 | 7 API integration | done | `/chat/stream` (SSE), request ids, error envelope, OpenAPI contract tests |
 | 8 Security + deployment | done (see gaps) | `tests/pro/test_isolation.py`, `tests/pro/integration/`, `Dockerfile`, `render.yaml`, README, DEPLOYMENT |
 | Hardening + multi-PDF upload | done (SQL not tried on real Supabase) | [schema_hardening_and_multi_upload.md](schema_hardening_and_multi_upload.md) |
+| Sharing a PDF by id | done (migration tested on plain Postgres only) | [share_document_by_id.md](share_document_by_id.md) |
 
 ### Deviations from this spec (and why)
 1. **Persistence order.** The user message is no longer stored before generation. A turn (user + assistant messages + sources) is stored only after a complete, grounded answer: a failed generation leaves nothing behind, retries cannot duplicate turns, history never has consecutive user turns. Consequently the SSE `meta` event carries only `conversation_id`; `done` carries `message_id`, `answer`, `refused`, `usage`.

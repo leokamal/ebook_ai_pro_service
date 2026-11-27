@@ -433,3 +433,82 @@ def test_users_edit_only_their_own_choices(db):
     assert db.execute(PROFILE, (uid,)).fetchone()[:4:3] == (key, "Ani")
     db.execute("delete from auth.users where id=%s", (uid,))
     assert db.execute("select count(*) from public.profiles where id=%s", (uid,)).fetchone()[0] == 0
+
+
+# ------------------------------------------------------------------ sharing (20261201000000_document_sharing.sql)
+def ready_doc(conn, uid, chunks=2):
+    doc = add_doc(conn, uid)
+    as_role(conn, "postgres")
+    conn.execute("update public.documents set status='completed', index_state='indexed', chunk_count=%s where id=%s",
+                 (chunks, doc))
+    for i in range(chunks):
+        conn.execute("insert into public.document_chunks (id, document_id, user_id, chunk_index, page_number) "
+                     "values (%s,%s,%s,%s,1)", (str(uuid.uuid5(uuid.UUID(doc), str(i))), doc, uid, i))
+    return doc
+
+
+def rpc(conn, uid, name, doc):
+    as_role(conn, "authenticated", uid)
+    return conn.execute(f"select public.{name}(%s)", (doc,)).fetchone()[0]
+
+
+def refused(conn, uid, name, doc, message):
+    conn.execute("savepoint r")
+    with pytest.raises(psycopg.Error, match=message):
+        rpc(conn, uid, name, doc)
+    conn.execute("rollback to savepoint r")
+
+
+def test_sharing_by_id_is_opt_in_and_copies_rows_only(db):
+    a, b, c = make_user(db), make_user(db), make_user(db)
+    doc = ready_doc(db, a)
+    refused(db, b, "accept_shared_document", doc, "not_found")                 # not shared yet
+    refused(db, b, "share_document", doc, "not_found")                         # not B's
+    rpc(db, a, "share_document", doc)
+    copy = str(rpc(db, b, "accept_shared_document", doc))
+    assert str(rpc(db, b, "accept_shared_document", doc)) == copy             # twice: same row
+    assert str(rpc(db, a, "accept_shared_document", doc)) == doc              # own id
+    refused(db, b, "share_document", copy, "forbidden")                        # only the uploader shares
+    as_role(db, "authenticated", b)
+    assert denied(db, "update public.documents set sharing_enabled=true where id=%s", (copy,))
+    rows = db.execute("select id, chunk_index from public.document_chunks order by chunk_index").fetchall()
+    assert [str(r[0]) for r in rows] == [str(uuid.uuid5(uuid.UUID(copy), str(i))) for i in range(2)]
+    row = db.execute("select status, index_state, content_owner_id from public.documents").fetchone()
+    assert row[:2] == ("completed", "indexed") and str(row[2]) == a
+    rpc(db, a, "stop_sharing_document", doc)
+    refused(db, c, "accept_shared_document", doc, "not_found")
+    refused(db, c, "accept_shared_document", copy, "not_found")                # a copy's id opens nothing
+
+
+def test_shared_file_is_readable_by_holders_and_deletable_by_nobody(db):
+    a, b, c = make_user(db), make_user(db), make_user(db)
+    doc = ready_doc(db, a)
+    path = f"{a}/{doc}/b.pdf"
+    as_role(db, "authenticated", a)
+    db.execute("insert into storage.objects (bucket_id, name, owner) values ('user-documents', %s, %s)", (path, a))
+    rpc(db, a, "share_document", doc)
+    rpc(db, b, "accept_shared_document", doc)
+    seen = "select count(*) from storage.objects where name=%s"
+    as_role(db, "authenticated", b)
+    assert db.execute(seen, (path,)).fetchone()[0] == 1
+    assert db.execute("select public.path_in_use(%s)", (f"{a}/anything",)).fetchone()[0] is True   # no probing
+    as_role(db, "authenticated", c)
+    assert db.execute(seen, (path,)).fetchone()[0] == 0
+    as_role(db, "postgres")
+    db.execute("delete from public.documents where id=%s", (doc,))             # the uploader's row is gone
+    for uid in (a, b):
+        as_role(db, "authenticated", uid)
+        db.execute("select set_config('storage.allow_delete_query', 'true', true)")
+        assert denied(db, "delete from storage.objects where name=%s", (path,))
+    as_role(db, "authenticated", c)                                             # the freed id stays reserved
+    assert denied(db, "insert into public.documents (id,user_id,title,file_name,file_path,file_size) "
+                      "values (%s,%s,'T','b.pdf',%s,10)", (doc, c, f"{c}/{doc}/b.pdf"))
+
+
+def test_a_shared_copy_counts_toward_the_document_limit(db):
+    a, b = make_user(db), make_user(db)
+    doc = ready_doc(db, a)
+    rpc(db, a, "share_document", doc)
+    as_role(db, "postgres")
+    db.execute("update public.app_limits set max_documents = 0")
+    refused(db, b, "accept_shared_document", doc, "quota_exceeded")

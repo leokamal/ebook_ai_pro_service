@@ -1,12 +1,16 @@
 """Account deletion: vectors, files, then the auth user (whose `on delete cascade` removes every row).
 
 Every step is safe to repeat and the auth user is deleted LAST, so a failure leaves an account that can simply
-retry. Blocking code (call from a `def` route).
+retry. Files and vectors another user's document still uses (sharing) are kept. Blocking code (call from a
+`def` route).
 """
 import logging
 from typing import Callable
 
 from app.core.exceptions import AppError
+from app.repositories.documents import content_key
+from app.services.ingestion import safe_storage_path
+from app.services.pdf_extraction import IngestError
 
 logger = logging.getLogger("uvicorn.error")
 SECURITY = logging.getLogger("uvicorn.error.security")
@@ -28,8 +32,10 @@ class AccountService:
     def delete(self, user_id: str) -> None:
         try:
             self.repo.mark_all_deleting(user_id)   # hides documents; a running ingestion aborts at commit
-            self.store.delete_user(user_id)
-            self._remove_files(user_id)
+            kept = self.repo.held_by_others(user_id)
+            self.store.delete_user(user_id, keep_document_ids=[r["content_id"] for r in kept])
+            self._release_shared(user_id)
+            self._remove_files(user_id, keep={r["file_path"] for r in kept})
             self._delete_user(user_id)             # LAST
         except AppError as e:
             logger.error("account deletion failed: %s", e.code)
@@ -43,8 +49,20 @@ class AccountService:
     def _incomplete():
         return AppError("account_deletion_incomplete", "The account could not be fully deleted; please try again", 503)
 
-    def _remove_files(self, user_id: str) -> None:
-        prefix, done = f"{user_id}/", set()
+    def _release_shared(self, user_id: str) -> None:
+        """Content added from other users: remove it only if this account was the last to need it."""
+        for doc in self.repo.list_documents(user_id):
+            content_id, owner = content_key(doc)
+            if owner == user_id or self.repo.content_used_elsewhere(content_id, user_id):
+                continue
+            self.store.delete_document(content_id, owner)
+            try:
+                self.storage.remove_object(self.bucket, safe_storage_path(doc))
+            except IngestError:
+                SECURITY.error("account deletion: unexpected path for a shared document")
+
+    def _remove_files(self, user_id: str, keep: set) -> None:
+        prefix, done = f"{user_id}/", set(keep)
         for _ in range(20):  # the listing may be paged by the server
             names = []
             for name in self.repo.list_user_objects(user_id):

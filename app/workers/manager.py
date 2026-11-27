@@ -59,10 +59,12 @@ def start_worker() -> Optional[object]:
         if accounts.list_deletion_requests():
             process_deletion_requests(accounts, get_account_service(db, get_storage(), get_vector_store()))
     requested_deletions = _throttle(delete_accounts, 30)
+    resume_rebuilds = _throttle(maint.resume_rebuilds, 60)
 
     def janitor():
         finish_deletions()
         requested_deletions()
+        resume_rebuilds()
         clean_up()
 
     _runner = ThreadJobRunner(

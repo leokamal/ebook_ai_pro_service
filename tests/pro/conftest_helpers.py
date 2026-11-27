@@ -78,7 +78,7 @@ def fake_split(text):
 
 
 def doc_row(user, doc, name="b.pdf", size=len(PDF), status="uploaded", **extra):
-    return {"id": doc, "user_id": user, "title": "Book", "file_name": name, "file_path": f"{user}/{doc}/{name}",
+    return {"id": doc, "user_id": user, "title": "Book", "file_name": name, "file_path": f"{user}/{doc}/{name}", "content_id": doc, "content_owner_id": user,
             "file_size": size, "language": None, "status": status, "index_state": "none", "chunk_count": 0,
             "page_count": None, "error_message": None, "created_at": "2026-01-01T00:00:00+00:00",
             "updated_at": "2026-01-01T00:00:00+00:00", "file_type": "application/pdf",

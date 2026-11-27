@@ -90,5 +90,20 @@ The Flutter app calls this API only for `POST /api/v1/chat/stream`. Everything e
 
 The app also updates `documents.language` directly (migration `20261129000000_document_language.sql`; owner only).
 
+## Sharing a PDF by its id
+Needs migration `20261201000000_document_sharing.sql`. Supabase functions only (no HTTP routes):
+```
+final sharedId = await supabase.rpc('share_document', params: {'p_document_id': id});          // owner: show / copy
+final newId = await supabase.rpc('accept_shared_document', params: {'p_document_id': sharedId}); // other user
+await supabase.rpc('stop_sharing_document', params: {'p_document_id': id});                    // owner
+```
+- `share_document` works only for the uploader on a `completed`, indexed document (`conflict` otherwise, `forbidden` on a copy added from someone else). The id opens nothing until this is called.
+- `accept_shared_document` adds the PDF to the caller's library, already `completed`: no upload, no processing, no extra embeddings. Calling it again returns the same document id. Unknown, not shared or not ready -> `not_found`; document limit -> `quota_exceeded`. Check that the entered text is a UUID before calling.
+- The copy has its own id, title and conversations. Read the file with the row's `file_path` (it is in the uploader's folder). Delete the copy with `request_document_delete`.
+- A copy is a `documents` row whose `content_owner_id` differs from `user_id` (`shared: true` in API responses). The owner's row has `sharing_enabled`.
+- `stop_sharing_document` stops new people; existing copies stay. If the owner deletes the document or account, copies keep working; the file and vectors are removed when the last holder deletes.
+- Anyone who has the id while sharing is on can add the PDF, including someone it was forwarded to.
+- Storage: a copy counts toward the document limit, not the space. The uploader's space stays used while anyone still holds the file, even after the uploader deleted it.
+
 ## Health
 `GET /api/v1/health` (no auth): `status` (`ok|degraded|unconfigured`), `database`, `embedding`, `embedding_provider`, `embedding_model`, `environment`, `vector_index`, `worker`. HTTP 503 when the service cannot work. `GET /health` is the liveness probe only.

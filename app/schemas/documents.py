@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 DocStatus = Literal["uploaded", "queued", "processing", "completed", "failed", "deleting"]
 
@@ -33,6 +33,15 @@ class DocumentOut(BaseModel):
     error_message: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+    shared: bool = False  # added from another user by document id (the content ids are not exposed)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _derive_shared(cls, data):
+        if isinstance(data, dict):
+            owner = data.get("content_owner_id")
+            data = {**data, "shared": bool(owner) and owner != data.get("user_id")}
+        return data
 
 
 class DocumentPage(BaseModel):

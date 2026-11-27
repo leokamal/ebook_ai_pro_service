@@ -1,7 +1,8 @@
 """Vector store abstraction + ChromaDB implementation (the only vector DB; in-process, never public).
 
-Security model: the metadata filter is NOT the boundary. Callers must pass document ids already
-validated against Postgres (RLS), and every hit is re-checked in code against that validated set.
+Security model: the metadata filter is NOT the boundary. Callers must pass content ids taken from documents
+already validated against Postgres (RLS), and every hit's (document_id, user_id) pair is re-checked in code.
+Chunk metadata `document_id`/`user_id` are the CONTENT's: the original document and its uploader.
 Chroma calls are blocking: use from `def` routes / the worker thread.
 """
 import logging
@@ -9,7 +10,7 @@ import os
 import threading
 import uuid
 from dataclasses import dataclass, field
-from typing import Callable, Optional, Protocol, Sequence
+from typing import Callable, Mapping, Optional, Protocol, Sequence
 
 from app.core.exceptions import ServiceUnavailable
 
@@ -55,10 +56,10 @@ class SearchHit:
 class VectorStore(Protocol):
     def upsert_chunks(self, chunks: Sequence[ChunkRecord]) -> None: ...
     def delete_document(self, document_id: str, user_id: str) -> None: ...
-    def delete_user(self, user_id: str) -> None: ...
+    def delete_user(self, user_id: str, keep_document_ids: Sequence[str] = ()) -> None: ...
     def delete_stale(self, document_id: str, user_id: str, keep_run: str) -> None: ...
     def count(self, document_id: str, user_id: str) -> int: ...
-    def query(self, embedding: list, user_id: str, document_ids: Sequence[str], top_k: int) -> list[SearchHit]: ...
+    def query(self, embedding: list, content: Mapping[str, str], top_k: int) -> list[SearchHit]: ...
     def health(self) -> dict: ...
     def reset_collection(self) -> None: ...
 
@@ -168,19 +169,25 @@ class ChromaVectorStore:
     def _doc_where(document_id, user_id, *extra):
         return {"$and": [{"document_id": document_id}, {"user_id": user_id}, *extra]}
 
+    def _deletable(self):
+        """Deleting works in `needs_reindex` too: it can never mix embedding models."""
+        self._open()
+        if self._state == "error" or self._col is None:
+            raise ServiceUnavailable("Vector index unavailable")
+        return self._col
+
     def delete_document(self, document_id: str, user_id: str) -> None:
         with self._lock:
-            self._ready().delete(where=self._doc_where(document_id, user_id))
+            self._deletable().delete(where=self._doc_where(document_id, user_id))
 
-    def delete_user(self, user_id: str) -> None:
-        """Account deletion. Allowed in `needs_reindex` too: deleting can never mix embedding models."""
+    def delete_user(self, user_id: str, keep_document_ids: Sequence[str] = ()) -> None:
+        """Account deletion. `keep_document_ids`: content this user uploaded that others still use."""
         if not user_id:
             raise ValueError("user_id is required")
+        keep = sorted(set(keep_document_ids))
+        where = {"$and": [{"user_id": user_id}, {"document_id": {"$nin": keep}}]} if keep else {"user_id": user_id}
         with self._lock:
-            self._open()
-            if self._state == "error" or self._col is None:
-                raise ServiceUnavailable("Vector index unavailable")
-            self._col.delete(where={"user_id": user_id})
+            self._deletable().delete(where=where)
 
     def delete_stale(self, document_id: str, user_id: str, keep_run: str) -> None:
         """After a successful (re)index: drop chunks of this document written by older runs."""
@@ -214,20 +221,21 @@ class ChromaVectorStore:
         col = self._ready()
         return len(col.get(where=self._doc_where(document_id, user_id), include=[])["ids"])
 
-    def query(self, embedding: list, user_id: str, document_ids: Sequence[str], top_k: int) -> list[SearchHit]:
-        if not document_ids or top_k < 1:
+    def query(self, embedding: list, content: Mapping[str, str], top_k: int) -> list[SearchHit]:
+        """`content` = {content_id: content_owner_id} of documents the caller was verified to hold."""
+        if not content or top_k < 1:
             return []
         if len(embedding) != self.dimension:
             raise ValueError("Query embedding dimension does not match the collection")
         col = self._ready()
-        allowed = set(document_ids)
         res = col.query(query_embeddings=[list(embedding)], n_results=top_k,
-                        where={"$and": [{"user_id": user_id}, {"document_id": {"$in": list(allowed)}}]},
+                        where={"document_id": {"$in": list(content)}},
                         include=["documents", "metadatas", "distances"])
         hits = []
         for cid, text, meta, dist in zip(res["ids"][0], res["documents"][0], res["metadatas"][0], res["distances"][0]):
             # defense in depth: the metadata filter is not trusted as the security boundary
-            if meta.get("user_id") != user_id or meta.get("document_id") not in allowed:
+            owner = content.get(meta.get("document_id"))
+            if owner is None or meta.get("user_id") != owner:
                 SECURITY.error("vector store returned a foreign chunk; dropped (chunk=%s)", cid)
                 continue
             hits.append(SearchHit(chunk_id=cid, document_id=meta["document_id"],

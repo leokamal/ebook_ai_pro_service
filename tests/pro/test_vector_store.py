@@ -111,12 +111,12 @@ def test_user_scoped_and_document_scoped_query():
     store.upsert_chunks(_chunks(emb, A, da2, ["cat on a mat"], title="A2"))
     store.upsert_chunks(_chunks(emb, B, db1, ["cat secret of user B"], title="B1"))
     q = emb.embed_query("cat")
-    both = store.query(q, A, [da1, da2], 10)
+    both = store.query(q, {da1: A, da2: A}, 10)
     assert {h.document_id for h in both} == {da1, da2}
-    assert [h.document_id for h in store.query(q, A, [da1], 10)] == [da1]
-    # forcing B's document id while authenticated as A returns nothing
-    assert store.query(q, A, [db1], 10) == []
-    assert store.query(q, A, [], 10) == []
+    assert [h.document_id for h in store.query(q, {da1: A}, 10)] == [da1]
+    # B's content id paired with A as owner returns nothing (the pair is re-checked)
+    assert store.query(q, {db1: A}, 10) == []
+    assert store.query(q, {}, 10) == []
     hit = both[0]
     assert hit.page_number == 1 and hit.document_title in ("A1", "A2") and 0 < hit.score <= 1
 
@@ -129,7 +129,7 @@ def test_post_filter_drops_foreign_chunks_even_if_filter_is_broken():
     store.upsert_chunks(_chunks(emb, A, da, ["cat mine"]))
     store.upsert_chunks(_chunks(emb, B, db, ["cat theirs"]))
     client.cols["col"].ignore_where_on_query = True  # simulate a tampered/ignored metadata filter
-    hits = store.query(emb.embed_query("cat"), A, [da], 10)
+    hits = store.query(emb.embed_query("cat"), {da: A}, 10)
     assert [h.document_id for h in hits] == [da]
 
 
@@ -143,7 +143,7 @@ def test_embedding_model_change_requires_reindex_then_reset_recovers():
     with pytest.raises(ServiceUnavailable):
         changed.upsert_chunks(_chunks(emb, A, doc, ["cat"]))
     with pytest.raises(ServiceUnavailable):
-        changed.query(emb.embed_query("cat"), A, [doc], 3)
+        changed.query(emb.embed_query("cat"), {doc: A}, 3)
     assert changed.health()["state"] == "needs_reindex"
     changed.reset_collection()
     assert changed.health()["state"] == "ready" and changed.health()["chunks"] == 0
@@ -210,8 +210,8 @@ def test_real_chroma_roundtrip(tmp_path):
     store = ChromaVectorStore(str(tmp_path / "chroma"), "col", MODEL, DIM, batch_size=2)
     store.upsert_chunks(_chunks(emb, A, doc, ["cat one", "dog two", "car three"]))
     assert store.count(doc, A) == 3
-    hits = store.query(emb.embed_query("cat"), A, [doc], 2)
-    assert hits[0].text == "cat one" and store.query(emb.embed_query("cat"), B, [doc], 2) == []
+    hits = store.query(emb.embed_query("cat"), {doc: A}, 2)
+    assert hits[0].text == "cat one" and store.query(emb.embed_query("cat"), {doc: B}, 2) == []
     store.delete_document(doc, A)
     assert store.count(doc, A) == 0
     store.close()

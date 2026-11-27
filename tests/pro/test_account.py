@@ -42,14 +42,15 @@ class Acct:
 
     def service(self):
         def step(name, fn):
-            def run(*a):
+            def run(*a, **kw):
                 if name in self.fail:
                     raise RuntimeError("secret failure detail")
-                return fn(*a)
+                return fn(*a, **kw)
             return run
 
         class Store:
             delete_user = staticmethod(step("vectors", self.w.store.delete_user))
+            delete_document = staticmethod(step("vectors", self.w.store.delete_document))
 
         class Storage:
             remove_object = staticmethod(step("files", self.w.storage.remove_object))

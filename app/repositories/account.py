@@ -3,6 +3,8 @@
 The service role bypasses RLS: every per-user method takes the VERIFIED user id and filters on it.
 `list_orphan_objects` / `path_registered` are deliberately cross-user (maintenance only).
 """
+from app.repositories.base import fetch_all
+
 DOCUMENTS = "documents"
 
 
@@ -34,6 +36,21 @@ class AccountRepository:
 
     def mark_all_deleting(self, user_id: str) -> None:
         self.db.table(DOCUMENTS).update({"status": "deleting"}).eq("user_id", user_id).execute()
+
+    def list_documents(self, user_id: str) -> list:
+        return (self.db.table(DOCUMENTS).select("id,user_id,file_name,file_path,content_id,content_owner_id")
+                .eq("user_id", user_id).limit(10000).execute().data)
+
+    def held_by_others(self, user_id: str) -> list:
+        """Cross-user: OTHER users' live documents that use content this user uploaded."""
+        return fetch_all(lambda: self.db.table(DOCUMENTS).select("content_id,file_path")
+                         .eq("content_owner_id", user_id).neq("user_id", user_id).neq("status", "deleting")
+                         .order("id"))
+
+    def content_used_elsewhere(self, content_id: str, user_id: str) -> bool:
+        """Cross-user: does anyone but this user still need the content?"""
+        return bool(self.db.table(DOCUMENTS).select("id").eq("content_id", content_id).neq("user_id", user_id)
+                    .neq("status", "deleting").limit(1).execute().data)
 
     def list_user_objects(self, user_id: str) -> list:
         return _names(self.db.rpc("list_user_objects", {"p_user": user_id}).execute().data)

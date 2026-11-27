@@ -24,6 +24,8 @@ def test_problems_are_reported_without_leaking_keys(monkeypatch):
         raise socket.gaierror("Name or service not known")
 
     monkeypatch.setattr(socket, "getaddrinfo", lambda *_: [])
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "gemini")  # a complete embedding setup, with or without a local .env
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
     assert config_problems(settings(monkeypatch, "https://ref.supabase.co")) == []
     assert "must look like" in config_problems(settings(monkeypatch, "ref.supabase.co"))[0]
     monkeypatch.setattr(socket, "getaddrinfo", no_dns)

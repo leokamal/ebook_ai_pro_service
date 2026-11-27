@@ -2,10 +2,10 @@ import builtins
 from typing import Optional
 
 from app.core.exceptions import AppError, Conflict, NotFound
-from app.repositories.base import paginate
+from app.repositories.base import fetch_all, paginate
 
 DOC_COLUMNS = ("id,user_id,title,file_name,file_path,file_type,file_size,page_count,language,status,"
-               "index_state,embedding_model,chunk_count,error_message,created_at,updated_at")
+               "index_state,embedding_model,chunk_count,error_message,created_at,updated_at,content_id,content_owner_id")
 
 
 def build_file_path(user_id: str, document_id: str, file_name: str) -> str:
@@ -14,6 +14,12 @@ def build_file_path(user_id: str, document_id: str, file_name: str) -> str:
             or any(ord(c) < 32 for c in file_name)):
         raise AppError("validation_error", "Invalid file name", 422)
     return f"{user_id}/{document_id}/{file_name}"
+
+
+def content_key(doc: dict) -> tuple[str, str]:
+    """(content_id, content_owner_id): where a document's file and vectors live. Several users' documents may
+    point at one content (sharing); for a normal upload it is the document's own (id, user_id)."""
+    return doc.get("content_id") or doc["id"], doc.get("content_owner_id") or doc.get("user_id")
 
 
 class DocumentRepository:
@@ -37,7 +43,8 @@ class DocumentRepository:
 
     def list_searchable(self, max_documents: int = 500) -> builtins.list[dict]:  # `list` is the method above
         """The caller's completed + indexed documents (RLS-scoped), deterministic order."""
-        return (self.db.table("documents").select("id,title,language").eq("status", "completed")
+        return (self.db.table("documents").select("id,user_id,title,language,content_id,content_owner_id")
+                .eq("status", "completed")
                 .eq("index_state", "indexed").order("created_at", desc=True).order("id", desc=True)
                 .limit(max_documents).execute().data)
 
@@ -71,7 +78,7 @@ class DocumentRepository:
 
 
 class DocumentAdminRepository:
-    """Service-role access for the worker/backend. EVERY method needs user_id and filters on it,
+    """Service-role access for the worker/backend. Every per-user method needs user_id and filters on it,
     because the service role bypasses RLS."""
 
     def __init__(self, service_db):
@@ -84,7 +91,7 @@ class DocumentAdminRepository:
             raise NotFound("Document not found")
         return rows[0]
 
-    MUTABLE = {"status", "index_state", "embedding_model", "chunk_count", "page_count", "error_message", "language"}
+    MUTABLE = {"status", "index_state", "embedding_model", "chunk_count", "page_count", "error_message", "error_code", "language"}
 
     def update_owned(self, document_id: str, user_id: str, fields: dict, only_if_status: Optional[str] = None) -> dict:
         """`only_if_status` makes the write conditional (compare-and-set): a concurrent DELETE that moved the
@@ -102,14 +109,33 @@ class DocumentAdminRepository:
     def delete_owned(self, document_id: str, user_id: str) -> None:
         self.db.table("documents").delete().eq("id", document_id).eq("user_id", user_id).execute()
 
-    # ---- deliberately CROSS-USER (maintenance only: janitor, reconcile, reindex). Never call these from a
-    # request handler on behalf of a user; each row carries its own user_id, which callers must use.
+    # ---- deliberately CROSS-USER (deletion of shared content, janitor, reconcile, reindex). Never return these
+    # rows to a user; each row carries its own user_id, which callers must use.
+    def list_holders(self, content_id: str) -> builtins.list[dict]:
+        """Every user's document pointing at this content."""
+        return fetch_all(lambda: self.db.table("documents").select(
+            "id,user_id,status,index_state,error_message,error_code,content_id,content_owner_id")
+            .eq("content_id", content_id).order("id"))
+
+    def live_holders(self, content_id: str, excluding: str = "") -> builtins.list[dict]:
+        """Holders that still need the content (not being deleted)."""
+        q = self.db.table("documents").select("id,user_id").eq("content_id", content_id).neq("status", "deleting")
+        if excluding:
+            q = q.neq("id", excluding)
+        return q.limit(1).execute().data  # callers only need to know whether there is one
+
     def list_deleting(self, limit: int = 20) -> list[dict]:
         return (self.db.table("documents").select("id,user_id,file_path").eq("status", "deleting")
                 .order("updated_at").order("id").limit(limit).execute().data)
 
+    def list_unindexed(self, limit: int = 200) -> builtins.list[dict]:
+        """Completed documents waiting for a rebuild (`stale`/`missing`)."""
+        return (self.db.table("documents").select("id,user_id,status,content_id,content_owner_id")
+                .eq("status", "completed").in_("index_state", ["stale", "missing"]).order("id").limit(limit)
+                .execute().data)
+
     def list_indexed(self, limit: int, offset: int) -> list[dict]:
-        return (self.db.table("documents").select("id,user_id,chunk_count,status,index_state")
+        return (self.db.table("documents").select("id,user_id,chunk_count,status,index_state,content_id,content_owner_id")
                 .eq("status", "completed").order("id").range(offset, offset + limit - 1).execute().data)
 
 
