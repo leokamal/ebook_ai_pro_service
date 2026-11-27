@@ -107,5 +107,7 @@ await supabase.rpc('stop_sharing_document', params: {'p_document_id': id});     
 - Anyone who has the id while sharing is on can add the PDF, including someone it was forwarded to.
 - Storage: a copy counts toward the document limit, not the space. The uploader's space stays used while anyone still holds the file, even after the uploader deleted it.
 
+`GET /s#<code>` is a public HTML page (no auth, not under `/api/v1`): the app's share QR code points to it and it opens `ebookaipro://share/<code>`. The code is in the fragment, so the server never receives or logs it.
+
 ## Health
 `GET /api/v1/health` (no auth): `status` (`ok|degraded|unconfigured`), `database`, `embedding`, `embedding_provider`, `embedding_model`, `environment`, `vector_index`, `worker`. HTTP 503 when the service cannot work. `GET /health` is the liveness probe only.

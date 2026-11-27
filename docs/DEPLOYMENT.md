@@ -157,6 +157,10 @@ Apply `supabase/migrations/20261128000000_client_rpcs.sql` after the earlier one
 
 Then apply `supabase/migrations/20261129000000_document_language.sql` (lets owners set a document's language). No redeploy needed.
 
+## Share page
+
+Redeploy before releasing an app that shares by QR code: it opens `GET /s` on this service. `ANDROID_PACKAGE` in `app/api/share_page.py` must match the app's `applicationId`.
+
 ## Migration 20261204000000_reader_avatars.sql
 
 Apply it after `20261203000000_document_readers.sql`. SQL only: no service redeploy.

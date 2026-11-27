@@ -19,6 +19,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.share_page import router as share_page_router
 from app.api.v1 import router as api_v1_router  # light imports only: heavy libraries load lazily
 from app.core.exceptions import install_error_handlers
 
@@ -50,6 +51,7 @@ app = FastAPI(
 
 install_error_handlers(app)  # request ids + the /api/v1 error envelope
 app.include_router(api_v1_router, prefix="/api/v1")
+app.include_router(share_page_router)  # public page behind the share QR code
 
 # Auth is a Bearer header (no cookies), so credentials are off. CORS_ORIGINS="https://app.example,https://x.example"
 # only matters for browser clients (Flutter web); native apps are unaffected.
