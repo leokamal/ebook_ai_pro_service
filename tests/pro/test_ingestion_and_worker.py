@@ -3,7 +3,7 @@ import tempfile
 
 import pytest
 
-from app.core.exceptions import Conflict, NotFound
+from app.core.exceptions import AppError, Conflict, NotFound
 from app.repositories.jobs import JobQueue
 from app.services.ingestion import LeaseLost
 from app.services.maintenance import Maintenance
@@ -176,6 +176,7 @@ def test_runner_permanent_failure_is_not_retried_and_message_is_user_safe():
     job, row = w.tables["processing_jobs"][0], w.tables["documents"][0]
     assert job["status"] == "failed" and job["attempts"] == 1
     assert row["status"] == "failed" and "scanned" in row["error_message"]
+    assert row["error_code"] == "no_extractable_text"
 
 
 def test_runner_transient_failure_retries_with_backoff_then_fails():
@@ -194,6 +195,27 @@ def test_runner_transient_failure_retries_with_backoff_then_fails():
     r.run_once()                                 # third attempt exhausts max_attempts
     assert job["status"] == "failed" and w.tables["documents"][0]["status"] == "failed"
     assert "details" not in w.tables["documents"][0]["error_message"].lower()
+
+
+def test_runner_quota_error_keeps_code_respects_retry_after_and_requeue_clears_it():
+    class Quota:
+        def process(self, job, heartbeat):
+            raise AppError("embedding_quota_exceeded", "quota", 429, {"Retry-After": "120"})
+
+    w = World()
+    doc = w.add_doc()
+    JobQueue(w.db).enqueue(doc, A)
+    r = _runner(w, Quota())
+    r.run_once()
+    job, row = w.tables["processing_jobs"][0], w.tables["documents"][0]
+    assert job["status"] == "queued" and 120 <= job["run_after"] <= 150
+    assert job["error_code"] == "embedding_quota_exceeded"
+    for now in (200, 500):
+        w.db.now = now
+        r.run_once()
+    assert row["status"] == "failed" and row["error_code"] == "embedding_quota_exceeded"
+    JobQueue(w.db).enqueue(doc, A)
+    assert row["error_code"] is None
 
 
 def test_lease_expiry_lets_another_worker_take_over_and_duplicate_enqueue_conflicts():

@@ -145,3 +145,7 @@ Celery/Redis consumer instead of the thread (`JobRunner`/`JobHandler` are the se
 Apply `supabase/migrations/20261128000000_client_rpcs.sql` after the earlier ones, then redeploy the service so its worker handles `account_deletion_requests`. Keep `WORKER_ENABLED` on.
 
 Then apply `supabase/migrations/20261129000000_document_language.sql` (lets owners set a document's language). No redeploy needed.
+
+## Migration 20261130000000_document_error_code.sql
+
+Apply it **before** deploying the worker: the new worker passes `p_error_code` to `finish_job`. Then deploy the service, then release the app. Quota (429) job failures are requeued after the larger of `Retry-After` and the exponential backoff, plus up to 25% jitter.

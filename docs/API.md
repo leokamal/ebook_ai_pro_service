@@ -39,7 +39,7 @@ A registered file cannot be deleted or replaced directly in Storage. To replace 
 - `GET /api/v1/documents/{id}/status` -> `{"status","index_state","progress","attempts","error_message","page_count","chunk_count"}`. `status`: `uploaded|queued|processing|completed|failed|deleting`. Poll it.
 - `POST /api/v1/documents/{id}/process` (only from `uploaded`) and `/retry` (only from `failed`) -> `202 {"document_id","status":"queued","job_id"}`; wrong state -> `409`; 5 documents already queued or processing -> `429 quota_exceeded`.
 - `DELETE /api/v1/documents/{id}` -> `202` (asynchronous: vectors, file and row are removed).
-Failures set `status=failed` with a user-safe `error_message` (e.g. scanned PDF without text, corrupt or password-protected PDF, too many pages).
+Failures set `status=failed` with a stable `documents.error_code` (read from the table; not part of `/status`: `no_extractable_text`, `encrypted_pdf`, `corrupt_pdf`, `too_many_pages`, `file_too_large`, `size_mismatch`, `invalid_path`, `embedding_quota_exceeded`, `llm_quota_exceeded`, `temporary_error`, `index_unavailable`, `document_missing`, `attempts_exhausted`) and a user-safe `error_message` (e.g. scanned PDF without text, corrupt or password-protected PDF, too many pages).
 Admin (`X-Admin-Token`): `POST /api/v1/admin/reindex` (after changing the embedding provider or model), `POST /api/v1/admin/reconcile` (rebuild documents whose vectors were lost).
 
 ### Conversations and chat (Phase 5)

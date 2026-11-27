@@ -5,6 +5,7 @@ leases, so a crash, restart or free-tier sleep just lets another claim take over
 Swap `ThreadJobRunner` for a Celery/Redis consumer later: only `JobRunner`/`JobHandler` are contracts.
 """
 import logging
+import random
 import socket
 import threading
 import uuid
@@ -12,7 +13,7 @@ from typing import Callable, Optional, Protocol
 
 import httpx
 
-from app.core.exceptions import NotFound, ServiceUnavailable
+from app.core.exceptions import AppError, NotFound, ServiceUnavailable
 from app.services.ingestion import LeaseLost
 from app.services.pdf_extraction import IngestError
 
@@ -30,6 +31,13 @@ class JobRunner(Protocol):
 
 def backoff_seconds(attempts: int) -> int:
     return min(30 * 2 ** max(attempts - 1, 0), 900)
+
+
+def quota_retry_seconds(error: AppError, attempts: int) -> int:
+    """At least Retry-After and the exponential backoff, plus up to 25% jitter."""
+    asked = str((error.headers or {}).get("Retry-After", ""))
+    delay = max(int(asked) if asked.isdigit() else 0, backoff_seconds(attempts))
+    return delay + int(random.uniform(0, delay * 0.25))
 
 
 class IngestHandler:
@@ -72,8 +80,9 @@ class ThreadJobRunner:
         def heartbeat(pct: int) -> bool:
             return self.queue.heartbeat(jid, self.worker_id, pct, self.lease)
 
-        def finish(ok: bool, error: Optional[str] = None, retry_after: Optional[int] = None):
-            if not self.queue.finish(jid, self.worker_id, ok, error, retry_after):
+        def finish(ok: bool, error: Optional[str] = None, retry_after: Optional[int] = None,
+                   code: Optional[str] = None):
+            if not self.queue.finish(jid, self.worker_id, ok, error, retry_after, code):
                 logger.warning("job %s: not finished by us (lease taken over, or the job was removed)", jid)
 
         try:
@@ -83,15 +92,23 @@ class ThreadJobRunner:
             logger.warning("job %s: lease lost, abandoning", jid)
         except IngestError as e:  # permanent: user-safe message, no retry
             logger.info("job %s failed permanently: %s", jid, e.code)
-            finish(False, e.message)
+            finish(False, e.message, code=e.code)
         except NotFound:  # document deleted while queued: nothing to retry
-            finish(False, "The document no longer exists")
+            finish(False, "The document no longer exists", code="document_missing")
         except ServiceUnavailable as e:  # e.g. index needs reindex: retrying will not fix it
             logger.error("job %s: %s", jid, e.message)
-            finish(False, "The search index is unavailable")
+            finish(False, "The search index is unavailable", code="index_unavailable")
+        except AppError as e:
+            attempts = job.get("attempts", 1)
+            logger.warning("job %s failed (%s), will retry if attempts remain", jid, e.code)
+            if e.status_code == 429:  # AI quota: keep the reason and respect Retry-After
+                finish(False, e.message, quota_retry_seconds(e, attempts), e.code)
+            else:
+                finish(False, "Temporary processing error", backoff_seconds(attempts), "temporary_error")
         except Exception:  # transient (network, 5xx, ...): details only in logs
             logger.exception("job %s failed, will retry if attempts remain", jid)
-            finish(False, "Temporary processing error", backoff_seconds(job.get("attempts", 1)))
+            finish(False, "Temporary processing error", backoff_seconds(job.get("attempts", 1)),
+                   "temporary_error")
         return True
 
     def _loop(self):
