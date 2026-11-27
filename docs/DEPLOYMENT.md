@@ -49,7 +49,7 @@ Startup/shutdown: the lifespan hook starts the job runner (no model loaded, Chro
 
 | Provider | Variables (defaults) | Install | Notes |
 |---|---|---|---|
-| `gemini` (default) | `GEMINI_EMBEDDING_MODEL` (`gemini-embedding-2`), `GEMINI_EMBEDDING_DIMENSION` (768; 128-3072) | `requirements.txt` | uses `GEMINI_API_KEY`; **all document text and queries are sent to Google** |
+| `gemini` (default) | `GEMINI_EMBEDDING_MODEL` (`gemini-embedding-2`, or the text-only `gemini-embedding-001`; changing it needs a reindex; each has its strategy in `app/services/embedding/gemini_models.py`), `GEMINI_EMBEDDING_DIMENSION` (768; 128-3072) | `requirements.txt` | uses `GEMINI_API_KEY`; **all document text and queries are sent to Google** |
 | `huggingface` | `EMBEDDING_MODEL` (`paraphrase-multilingual-MiniLM-L12-v2`), `EMBEDDING_DIMENSION` (384) | `requirements-huggingface.txt`; Docker `--build-arg INSTALL_HUGGINGFACE=true` | runs on the server's CPU and RAM |
 
 Local models:

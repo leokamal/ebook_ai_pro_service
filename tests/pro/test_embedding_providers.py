@@ -82,7 +82,7 @@ def test_client_errors_are_not_retried():
     ({"dim": DIM + 1}, {}, ServiceUnavailable),
     ({"drop": 1}, {}, EmbeddingUnavailable),
     ({}, {"key": ""}, ServiceUnavailable),
-    ({}, {"model": "gemini-embedding-001"}, ServiceUnavailable),
+    ({}, {"model": "gemini-embedding-1"}, ServiceUnavailable),
 ])
 def test_bad_configuration_or_response_is_refused(http_kw, emb_kw, error):
     emb, _ = make(FakeHttp(**http_kw), **emb_kw)
@@ -113,3 +113,26 @@ def test_switching_provider_is_one_variable(monkeypatch):
     monkeypatch.setenv("EMBEDDING_PROVIDER", "HuggingFace")
     s = get_settings()
     assert (s.embedding_provider, s.embedding_model, s.embedding_dimension) == ("huggingface", "local-model", 384)
+
+
+def test_gemini_001_uses_task_type_and_normalises():
+    bodies = []
+
+    class Client:
+        def post(self, url, json, headers):
+            bodies.append(json)
+
+            class R:
+                status_code = 200
+
+                def json(self):
+                    return {"embeddings": [{"values": [3.0, 4.0]}]}
+
+            return R()
+
+    e = GeminiEmbedder("k", "gemini-embedding-001", 2, client_factory=Client)
+    assert e.embed_query("q") == pytest.approx([0.6, 0.8])
+    e.embed_documents(["d"])
+    sent = [b["requests"][0] for b in bodies]
+    assert [(r["taskType"], r["content"]["parts"][0]["text"]) for r in sent] == [
+        ("RETRIEVAL_QUERY", "q"), ("RETRIEVAL_DOCUMENT", "d")]
