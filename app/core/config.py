@@ -5,6 +5,7 @@ Never hardcode secrets.
 import os
 import socket
 from dataclasses import dataclass
+from importlib.util import find_spec
 from typing import Optional
 from urllib.parse import urlsplit
 
@@ -84,6 +85,18 @@ def _embedding() -> dict:
             "embedding_dimension": int(_env(dim_var, default=dim))}
 
 
+def embedding_problem(s: Settings) -> Optional[tuple[str, str]]:
+    """(short code, log message) when the configured embedding provider cannot work, else None."""
+    if s.embedding_provider not in _EMBEDDINGS:
+        return "unknown_provider", f"EMBEDDING_PROVIDER must be one of: {', '.join(_EMBEDDINGS)}"
+    if s.embedding_provider == "gemini" and not s.gemini_api_key:
+        return "no_api_key", "GEMINI_API_KEY is not set"
+    if s.embedding_provider == "huggingface" and find_spec("sentence_transformers") is None:  # does not import it
+        return ("not_installed", "EMBEDDING_PROVIDER=huggingface but requirements-huggingface.txt is not installed "
+                                 "(set EMBEDDING_PROVIDER=gemini or install it)")
+    return None
+
+
 def config_problems(s: Settings) -> list[str]:
     """Likely misconfigurations, for the startup log. Messages never contain a key."""
     out = []
@@ -99,6 +112,11 @@ def config_problems(s: Settings) -> list[str]:
     if s.anon_key.startswith("sb_secret_"):
         out.append("SUPABASE_ANON_KEY holds a SECRET key: use the publishable (anon) key, and rotate the secret "
                    "key if it was ever shipped in a client")
+    problem = embedding_problem(s)
+    if problem:
+        out.append(problem[1])
+    if s.environment == "production" and not os.environ.get("ADMIN_TOKEN"):
+        out.append("ADMIN_TOKEN is not set: reindex and reconcile are disabled")
     return out
 
 

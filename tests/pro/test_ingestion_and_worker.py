@@ -175,7 +175,7 @@ def test_runner_permanent_failure_is_not_retried_and_message_is_user_safe():
     r.run_once()
     job, row = w.tables["processing_jobs"][0], w.tables["documents"][0]
     assert job["status"] == "failed" and job["attempts"] == 1
-    assert row["status"] == "failed" and "scanned" in row["error_message"]
+    assert row["status"] == "failed" and "scanned" in row["error_message"] and "yet" not in row["error_message"]
     assert row["error_code"] == "no_extractable_text"
 
 

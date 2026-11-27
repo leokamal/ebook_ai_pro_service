@@ -4,7 +4,7 @@ These are deliberately cross-user (admin token / worker only). Each row is handl
 """
 import logging
 
-from app.core.exceptions import AppError, Conflict
+from app.core.exceptions import Conflict
 from app.repositories.documents import DocumentAdminRepository
 from app.repositories.jobs import JobQueue
 

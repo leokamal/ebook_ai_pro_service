@@ -1,4 +1,4 @@
-"""Operator endpoints (X-Admin-Token, same guard as the legacy admin routes)."""
+"""Operator endpoints (X-Admin-Token)."""
 from typing import Annotated
 
 from fastapi import APIRouter, Depends

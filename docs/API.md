@@ -89,3 +89,6 @@ or, if generation fails after the stream started: `event: error data: {"code": "
 The Flutter app calls this API only for `POST /api/v1/chat/stream`. Everything else goes to Supabase with the user's session: rows under RLS, plus the functions of `20261128000000_client_rpcs.sql`: `request_processing(p_document_id)`, `request_document_delete(p_document_id)`, `my_usage()`, `request_account_deletion()`. Errors are raised as `not_found|conflict|file_not_found|quota_exceeded|forbidden`. The worker must be running: it processes jobs, finishes `deleting` documents and performs requested account deletions.
 
 The app also updates `documents.language` directly (migration `20261129000000_document_language.sql`; owner only).
+
+## Health
+`GET /api/v1/health` (no auth): `status` (`ok|degraded|unconfigured`), `database`, `embedding`, `embedding_provider`, `embedding_model`, `environment`, `vector_index`, `worker`. HTTP 503 when the service cannot work. `GET /health` is the liveness probe only.

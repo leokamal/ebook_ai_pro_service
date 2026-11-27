@@ -82,6 +82,16 @@ Text to publish as the data deletion instructions: "Open the app, go to Account,
 
 **Check once on the real database** that the usage query behind `can_upload()` (it runs on every upload) uses an index: `set enable_seqscan = off; explain select count(*) from storage.objects where bucket_id = 'user-documents' and name like '<user-uuid>/%';`. The `name` prefix should appear in an `Index Cond`. If it only appears in a `Filter`, plan a follow-up before the bucket grows large.
 
+## 3c. Production checklist
+
+- `/api/v1/health` returns 200 with `"database":"ok"` and `"embedding":"ok"`, and `"environment":"production"`.
+- Environment: `ENVIRONMENT=production`, `EMBEDDING_PROVIDER=gemini` (or install the local model), publishable key in `SUPABASE_ANON_KEY`, `ADMIN_TOKEN`, `CORS_ORIGINS` set to your web origins (default `*`).
+- Python 3.11 (`.python-version`), CI green (`.github/workflows/tests.yml`).
+- Persistent disk at `CHROMA_PERSIST_DIRECTORY`, one instance, one worker, no sleeping tier.
+- Paid or sufficient Gemini quota; data-use terms checked.
+- Dependencies pinned (**not done yet**: `requirements.txt` is unpinned, so each build can pull new versions).
+- Real end-to-end run: sign in, upload, index, search, chat, summarize, delete account.
+
 ## 4. Recovery: ChromaDB storage lost
 
 Postgres and Storage are the source of truth; Chroma is derived data.
@@ -115,6 +125,7 @@ Memory: the process holds Chroma's index (plus, with the local provider, torch a
 | Uploads refused by Storage | the user's space is full (or the migration's policy sees no `app_limits` row) | check `GET /api/v1/me`; adjust `public.app_limits` |
 | All `/api/v1` calls `401` | token expired/wrong project, JWKS unreachable, `SUPABASE_URL` mismatch (issuer check) | check the app uses the same project; check logs for `JWKS fetch failed` |
 | Log `Name or service not known` / `worker cannot reach Supabase` / `configuration: SUPABASE_URL ...` | the host in `SUPABASE_URL` does not exist: typo, another project's ref, or a paused/deleted project | copy the Project URL from the Supabase dashboard into the host's environment, then redeploy |
+| `/api/v1/health` 503 `degraded` | see its `database` and `embedding` fields: `unreachable` (URL), `bad_anon_key` / `bad_service_key` (keys of another project), `schema_outdated` (apply migrations), `not_installed` (provider without its packages), `no_api_key` | fix the setting; the result is cached for 30 s |
 | `/api/v1/health` 503 `unconfigured` | missing `SUPABASE_URL` / anon / service-role key | set env |
 | `/api/v1/health` 503 `needs_reindex` | embedding model or dimension changed | `POST /api/v1/admin/reindex` |
 | Document stays `uploaded` after registering | the user already had `MAX_ACTIVE_JOBS_PER_USER` documents queued or processing | the app calls `POST .../process` later |
@@ -139,7 +150,7 @@ Memory: the process holds Chroma's index (plus, with the local provider, torch a
 
 ## 9. Upgrade path (not built)
 
-Celery/Redis consumer instead of the thread (`JobRunner`/`JobHandler` are the seams), Chroma as a separate server or another vector store behind `VectorStore`, a cross-encoder reranker behind `RerankingService`, OCR for scanned PDFs (EasyOCR is already a dependency), a snapshot backup of the Chroma directory to Storage, sharing documents between users, background execution of `reindex`/`reconcile` as queued jobs (they currently loop inside the admin request).
+Celery/Redis consumer instead of the thread (`JobRunner`/`JobHandler` are the seams), Chroma as a separate server or another vector store behind `VectorStore`, a cross-encoder reranker behind `RerankingService`, a snapshot backup of the Chroma directory to Storage, sharing documents between users, background execution of `reindex`/`reconcile` as queued jobs (they currently loop inside the admin request).
 
 ## Migration for direct app access
 Apply `supabase/migrations/20261128000000_client_rpcs.sql` after the earlier ones, then redeploy the service so its worker handles `account_deletion_requests`. Keep `WORKER_ENABLED` on.

@@ -7,7 +7,7 @@ from fastapi import Depends, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.config import Settings, get_settings
-from app.core.exceptions import ServiceUnavailable, Unauthorized
+from app.core.exceptions import Unauthorized
 from app.core.security import AuthUser, verify_token
 
 
@@ -84,7 +84,7 @@ def get_service_db():
 
 
 def get_storage():
-    import supabase_storage  # legacy module, extended with Pro helpers
+    import supabase_storage
     return supabase_storage
 
 
@@ -110,7 +110,6 @@ def get_job_reader(db=Depends(get_user_db)):
 
 def build_ingestion(settings=None):
     """IngestionService for the worker / maintenance (no request context)."""
-    import os
     from app.repositories.documents import ChunkRepository, DocumentAdminRepository
     from app.services.ingestion import IngestConfig, IngestionService
     s = settings or get_settings()

@@ -1,6 +1,6 @@
 """Document ingestion pipeline: PDF in storage -> pages -> chunks -> embeddings -> Chroma -> Postgres.
 
-Commit-last ordering (mirrors the legacy "VERSION.json last" rule): new chunks are upserted first,
+Commit-last ordering: new chunks are upserted first,
 stale chunks of older runs are removed and the document is marked `completed` only after every
 batch succeeded. A failed re-run therefore never destroys the previously good index.
 Blocking code: runs in the worker thread.
@@ -9,7 +9,7 @@ import logging
 import os
 import tempfile
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable
 
 from app.core.exceptions import NotFound
 from app.repositories.documents import ChunkRepository, DocumentAdminRepository
@@ -108,7 +108,7 @@ class IngestionService:
 
         if not meta:
             raise pdf.IngestError("no_extractable_text",
-                                  "No text found in this PDF (scanned PDFs are not supported yet)")
+                                  "No text found in this PDF (scanned or image-only PDFs are not supported)")
 
         # ---- commit (everything above succeeded). Re-check the lease: a stalled worker must not commit
         # next to the worker that took its job over.

@@ -34,13 +34,14 @@ All eight phases are implemented. Operational documentation: [README](../../READ
 8. Final review (Phase 7-8) hardening: per-user cap on concurrent streams + stream deadline, `LLM_MAX_OUTPUT_TOKENS`, auto-title through the service-role writer (the user-scoped client may be closed when a stream ends), container entrypoint that fixes volume ownership then drops to a non-root user, legacy modules also accept `SUPABASE_SERVICE_ROLE_KEY`/`GEMINI_API_KEY`, SQL storage test sets `storage.allow_delete_query` so the DELETE policy is really exercised.
 9. `reindex_all` flags documents stale **before** resetting the collection and refuses while jobs are running (found in review).
 10. **Embeddings are pluggable** (supersedes section E): `app/services/embedding/` holds one strategy per provider and a factory. `EMBEDDING_PROVIDER` defaults to `gemini` (`gemini-embedding-2`, 768d); the local sentence-transformers model is optional (`requirements-huggingface.txt`).
+11. **OCR is not supported** (owner decision): scanned or image-only PDFs fail with `no_extractable_text`.
 
 ### Known gaps / not verified (be honest before launch)
 - SQL integration tests (RLS, column grants, storage policies, RPC privileges) have **never run on a real Supabase stack** (they pass on plain Postgres with a stand-in `auth`/`storage` schema); run them against a local Supabase.
 - Real ChromaDB persistence/reopen behaviour, embeddings from either provider (Arabic/French quality, Gemini quotas and memory use are unmeasured), real Gemini calls and the Supabase Storage REST helpers were not exercised (the suite uses fakes; one real-Chroma test skips when `chromadb` is absent).
 - `RAG_MIN_SCORE`, per-document caps, chunk size (1000/150) and the condense step are untuned defaults.
 - Performance/memory figures in DEPLOYMENT are design bounds, not measurements.
-- Not built: Chroma snapshot backup, OCR for scanned PDFs, Celery/Redis, per-user storage quota beyond document/job counts, background execution of reindex/reconcile.
+- Not built: Chroma snapshot backup, Celery/Redis, per-user storage quota beyond document/job counts, background execution of reindex/reconcile.
 - PyMuPDF is AGPL-3.0: confirm the licence is acceptable (or switch to `pypdfium2`).
 
 ## Current behavior / problems (Phase 1 analysis report)

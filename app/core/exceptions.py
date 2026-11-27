@@ -1,7 +1,6 @@
 """Error model for /api/v1: {"error": {"code", "message", "request_id"}}.
 
-Handlers only reshape /api/v1 paths; every other path falls through to FastAPI's defaults so the
-legacy {"detail": ...} responses are unchanged.
+Handlers only reshape /api/v1 paths; every other path keeps FastAPI's default error responses.
 """
 import logging
 import re
@@ -104,7 +103,7 @@ def install_error_handlers(app: FastAPI):
         logger.exception("unhandled error on %s", request.url.path)  # details only in logs
         if not _is_api(request):
             from fastapi.responses import PlainTextResponse
-            return PlainTextResponse("Internal Server Error", status_code=500)  # unchanged legacy behaviour
+            return PlainTextResponse("Internal Server Error", status_code=500)
         return _body("internal_error", "Internal server error", request, 500)
 
     @app.exception_handler(RequestValidationError)

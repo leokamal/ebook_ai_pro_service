@@ -11,7 +11,10 @@ class VectorIndexHealth(BaseModel):
 
 
 class HealthResponse(BaseModel):
-    status: str  # ok | unconfigured
+    status: str  # ok | degraded | unconfigured
+    database: str  # ok | unreachable | bad_anon_key | bad_service_key | schema_outdated | error | unconfigured
+    embedding: str  # ok | no_api_key | not_installed | unknown_provider
+    embedding_provider: str
     environment: str
     embedding_model: str
     embedding_loaded: bool

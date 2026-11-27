@@ -1,6 +1,6 @@
 ---
 name: do-feature
-description: Implement a feature, fix, or optimization in the ebook_ai_service FastAPI backend from a spec in docs/features/ (written by /plan-feature) or from a direct description, then test it, review it, and update docs. Use this whenever the user says "implement", "build", "do the feature", "execute the plan", "apply docs/features/...", or asks for a code change to main.py, rag_service.py, ocr_service.py, supabase_storage.py or security.py — even if they don't name the skill. Do not use it for planning only (use plan-feature) or for pure questions.
+description: Implement a feature, fix, or optimization in the ebook_ai_service FastAPI backend from a spec in docs/features/ (written by /plan-feature) or from a direct description, then test it, review it, and update docs. Use this whenever the user says "implement", "build", "do the feature", "execute the plan", "apply docs/features/...", or asks for a code change to main.py, app/, supabase_storage.py or security.py — even if they don't name the skill. Do not use it for planning only (use plan-feature) or for pure questions.
 ---
 
 # do-feature
@@ -16,14 +16,13 @@ Implement a spec end to end: code, tests, docs, review. The spec is the contract
 2. **Make a checklist** from the spec's lettered sections and acceptance criteria (a todo list). Work through it in order; tick items only when verified, not when written.
 
 3. **Implement in small, reviewable edits.** Respect these invariants (each exists because breaking it has caused or would cause outages):
-   - Keep heavy imports (torch, easyocr, chroma, gemini) lazy inside functions so the port binds fast.
+   - Keep heavy imports (torch, chroma, fitz, gemini) lazy inside functions so the port binds fast.
    - Keep the `pysqlite3` swap as the very first block of `main.py`.
    - Queries use the local Chroma only; never call Supabase on the query path.
    - Index changes: download/generate in a temp dir on the same filesystem, verify, then swap atomically. `_update_lock` serializes download/generate; `_lock` guards the in-memory swap.
    - Publishing: upload index files first, `VERSION.json` last, delete stale remote files only after success.
    - Preserve the path-traversal guard on downloaded object names.
    - No hardcoded secrets; read env vars. Admin endpoints use `Depends(verify_admin_token)`.
-   - Do not touch `ocr_service.py` or `/upload` unless the spec says so.
    - Never stage or commit `.env`, `config/`, `chroma_db_local/`.
    - Don't leak internals through `HTTPException(detail=str(e))` in new code; log the error, return a generic message.
 
@@ -37,7 +36,7 @@ Implement a spec end to end: code, tests, docs, review. The spec is the contract
 
 6. **Review before finishing.** Delegate to the project subagents in parallel, scoped to what changed:
    - `security-reviewer` if you touched endpoints, uploads, auth, storage paths, CORS, or error handling.
-   - `rag-pipeline-reviewer` if you touched `rag_service.py`, chunking, embeddings, index lifecycle, or retrieval.
+   - `rag-pipeline-reviewer` if you touched `app/services/`, chunking, embeddings, index lifecycle, or retrieval.
    Fix high/medium findings or record why they're deferred.
 
 7. **Update docs** that the change makes stale: `docs/API.md` for any endpoint/contract change (Flutter relies on it), the Architecture / env-var / Render sections of `CLAUDE.md`, and the spec itself if you deviated (note the deviation and why).
