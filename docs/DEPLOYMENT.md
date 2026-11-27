@@ -157,6 +157,18 @@ Apply `supabase/migrations/20261128000000_client_rpcs.sql` after the earlier one
 
 Then apply `supabase/migrations/20261129000000_document_language.sql` (lets owners set a document's language). No redeploy needed.
 
+## Migration 20261204000000_reader_avatars.sql
+
+Apply it after `20261203000000_document_readers.sql`. SQL only: no service redeploy.
+
+## Migration 20261203000000_document_readers.sql
+
+Apply it after `20261202000000_share_any_status.sql`, before releasing the app. SQL only: no service redeploy.
+
+## Migration 20261202000000_share_any_status.sql
+
+Apply it after `20261201000000_document_sharing.sql`. SQL only: no service redeploy needed for it. It replaces `share_document` and `accept_shared_document` and adds triggers that keep waiting copies in step with the uploader's document.
+
 ## Migration 20261201000000_document_sharing.sql
 
 Apply it **before** deploying the service: the new code reads `documents.content_id` / `content_owner_id`. Then deploy, then release the app. No reindex is needed. Do not roll the service back to an older version once anyone has accepted a shared document: older code deletes vectors and files without checking other holders.

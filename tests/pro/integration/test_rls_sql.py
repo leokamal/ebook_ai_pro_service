@@ -512,3 +512,76 @@ def test_a_shared_copy_counts_toward_the_document_limit(db):
     as_role(db, "postgres")
     db.execute("update public.app_limits set max_documents = 0")
     refused(db, b, "accept_shared_document", doc, "quota_exceeded")
+
+
+def set_status(conn, doc, status, index_state="none", chunks=0):
+    as_role(conn, "postgres")
+    for i in range(chunks):
+        conn.execute("insert into public.document_chunks (id, document_id, user_id, chunk_index, page_number) "
+                     "select %s, id, user_id, %s, 1 from public.documents where id=%s",
+                     (str(uuid.uuid5(uuid.UUID(doc), str(i))), i, doc))
+    conn.execute("update public.documents set status=%s, index_state=%s, chunk_count=%s where id=%s",
+                 (status, index_state, chunks, doc))
+
+
+def seen(conn, doc):
+    as_role(conn, "postgres")
+    return conn.execute("select status, index_state, error_code, "
+                        "(select count(*) from public.document_chunks c where c.document_id = d.id) "
+                        "from public.documents d where id=%s", (doc,)).fetchone()
+
+
+def test_a_copy_accepted_before_analysis_follows_the_uploader(db):
+    a, b = make_user(db), make_user(db)
+    doc = add_doc(db, a)
+    rpc(db, a, "share_document", doc)                                           # right after the import
+    copy = str(rpc(db, b, "accept_shared_document", doc))
+    assert seen(db, copy) == ("uploaded", "none", None, 0)
+    set_status(db, doc, "processing")
+    assert seen(db, copy)[0] == "processing"
+    set_status(db, doc, "completed", "indexed", chunks=2)
+    assert seen(db, copy) == ("completed", "indexed", None, 2)
+    ids = db.execute("select id from public.document_chunks where document_id=%s order by chunk_index",
+                     (copy,)).fetchall()
+    assert [str(r[0]) for r in ids] == [str(uuid.uuid5(uuid.UUID(copy), str(i))) for i in range(2)]
+
+
+def test_a_waiting_copy_fails_when_the_uploader_deletes(db):
+    a, b = make_user(db), make_user(db)
+    doc = add_doc(db, a)
+    rpc(db, a, "share_document", doc)
+    copy = str(rpc(db, b, "accept_shared_document", doc))
+    set_status(db, doc, "processing")
+    set_status(db, doc, "deleting")
+    assert seen(db, copy)[:3] == ("failed", "none", "source_removed")
+
+
+def readers(conn, uid, doc):
+    as_role(conn, "authenticated", uid)
+    return conn.execute("select reader_document_id from public.document_readers(%s)", (doc,)).fetchall()
+
+
+def test_only_the_uploader_lists_and_removes_readers(db):
+    a, b, c = make_user(db), make_user(db), make_user(db)
+    doc = ready_doc(db, a)
+    rpc(db, a, "share_document", doc)
+    copy_b = str(rpc(db, b, "accept_shared_document", doc))
+    copy_c = str(rpc(db, c, "accept_shared_document", doc))
+    assert {str(r[0]) for r in readers(db, a, doc)} == {copy_b, copy_c}
+
+    remove = "select public.remove_document_reader(%s, %s)"
+    for uid, target, args in ((b, copy_b, (doc, copy_c)), (a, doc, (doc, doc))):  # a reader; the own row
+        as_role(db, "authenticated", uid)
+        db.execute("savepoint r")
+        with pytest.raises(psycopg.Error, match="not_found"):
+            db.execute(remove, args)
+        db.execute("rollback to savepoint r")
+    refused(db, b, "document_readers", doc, "not_found")
+    refused(db, b, "document_readers", copy_b, "not_found")
+
+    as_role(db, "authenticated", a)
+    db.execute(remove, (doc, copy_b))
+    assert [str(r[0]) for r in readers(db, a, doc)] == [copy_c]
+    as_role(db, "postgres")
+    status = dict((str(i), s) for i, s in db.execute("select id, status from public.documents").fetchall())
+    assert (status[copy_b], status[copy_c], status[doc]) == ("deleting", "completed", "completed")

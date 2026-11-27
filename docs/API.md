@@ -91,16 +91,18 @@ The Flutter app calls this API only for `POST /api/v1/chat/stream`. Everything e
 The app also updates `documents.language` directly (migration `20261129000000_document_language.sql`; owner only).
 
 ## Sharing a PDF by its id
-Needs migration `20261201000000_document_sharing.sql`. Supabase functions only (no HTTP routes):
+Needs migrations `20261201000000_document_sharing.sql` and `20261202000000_share_any_status.sql`. Supabase functions only (no HTTP routes):
 ```
 final sharedId = await supabase.rpc('share_document', params: {'p_document_id': id});          // owner: show / copy
 final newId = await supabase.rpc('accept_shared_document', params: {'p_document_id': sharedId}); // other user
 await supabase.rpc('stop_sharing_document', params: {'p_document_id': id});                    // owner
 ```
-- `share_document` works only for the uploader on a `completed`, indexed document (`conflict` otherwise, `forbidden` on a copy added from someone else). The id opens nothing until this is called.
-- `accept_shared_document` adds the PDF to the caller's library, already `completed`: no upload, no processing, no extra embeddings. Calling it again returns the same document id. Unknown, not shared or not ready -> `not_found`; document limit -> `quota_exceeded`. Check that the entered text is a UUID before calling.
+- `share_document` works only for the uploader, on a document in any state except `deleting` (`conflict`; `forbidden` on a copy added from someone else). The id opens nothing until this is called.
+- `accept_shared_document` adds the PDF to the caller's library: no upload, no extra embeddings. It is `completed` if the uploader's document is; otherwise the copy takes that document's status and follows it until it is `completed` (the copy has no job of its own, so no progress). Calling it again returns the same document id. Unknown, not shared or being deleted -> `not_found`; document limit -> `quota_exceeded`. Check that the entered text is a UUID before calling.
 - The copy has its own id, title and conversations. Read the file with the row's `file_path` (it is in the uploader's folder). Delete the copy with `request_document_delete`.
 - A copy is a `documents` row whose `content_owner_id` differs from `user_id` (`shared: true` in API responses). The owner's row has `sharing_enabled`.
+- If the uploader deletes before the analysis ends, waiting copies become `failed` with `error_code = source_removed`. A copy can call `request_processing` itself whenever it is `uploaded` or `failed`.
+- `document_readers(p_document_id)` -> rows `{reader_document_id, display_name, avatar_url, added_at}`, newest first; `remove_document_reader(p_document_id, p_reader_document_id)` marks that copy `deleting`. Uploader only (`not_found` otherwise). No user id or e-mail is returned; `avatar_url` is null when the reader set `avatar_hidden` (`20261204000000_reader_avatars.sql`). A removed reader can accept again while sharing is on. Migration `20261203000000_document_readers.sql`.
 - `stop_sharing_document` stops new people; existing copies stay. If the owner deletes the document or account, copies keep working; the file and vectors are removed when the last holder deletes.
 - Anyone who has the id while sharing is on can add the PDF, including someone it was forwarded to.
 - Storage: a copy counts toward the document limit, not the space. The uploader's space stays used while anyone still holds the file, even after the uploader deleted it.

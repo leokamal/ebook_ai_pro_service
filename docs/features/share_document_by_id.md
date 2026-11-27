@@ -1,5 +1,7 @@
 # Share a PDF with another user by its id
 
+**Changed since (`20261202000000_share_any_status.sql`):** a document can be shared and accepted in any state except `deleting`; waiting copies follow the uploader's row. The `completed` + `indexed` requirement below no longer applies.
+
 **Status: implemented** (migration, backend, offline tests, SQL tests on plain Postgres with a stand-in `auth`/`storage` schema). Not done: applying the migration to the real project, Flutter code.
 
 **Deviations:** (1) `user_storage_usage` is unchanged: the uploader stays charged for a shared file even after deleting their row, because freeing it would allow unlimited storage by sharing to a second account. (2) The delete rule is a RESTRICTIVE policy `user_documents_delete_in_use` plus `path_in_use()`, so rerunning the first migration cannot undo it. (3) A trigger reserves a `content_id` while any holder exists, so nobody can register that id again and overwrite shared vectors. (4) `VectorStore.delete_document` now also works in `needs_reindex`. (5) A worker sweep (`Maintenance.resume_rebuilds`, every 60 s) re-queues shared content whose rebuild job was lost with its holder, and marks waiting holders `failed` when the rebuild failed.
